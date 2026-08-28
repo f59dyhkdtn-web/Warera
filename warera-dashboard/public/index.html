@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WarEra Dispatch — Market · Rankings · Battles</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead__title">
+    <span class="masthead__mark">✦</span>
+    <h1>WARERA <span>DISPATCH</span></h1>
+  </div>
+  <div class="masthead__ticker" id="ticker">
+    <span class="ticker__dot"></span>
+    <span id="tickerText">establishing uplink&hellip;</span>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab is-active" data-tab="market">Market</button>
+  <button class="tab" data-tab="rankings">Rankings</button>
+  <button class="tab" data-tab="battles">Battles</button>
+</nav>
+
+<main class="panels">
+
+  <!-- MARKET -->
+  <section class="panel is-active" id="panel-market">
+    <div class="panel__header">
+      <h2>Item Trading Post</h2>
+      <div class="panel__controls">
+        <input id="marketFilter" type="text" placeholder="filter by item code&hellip;" autocomplete="off" />
+        <button id="marketRefresh" class="btn">Refresh</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="marketTable">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Best Sell</th>
+            <th>Best Buy</th>
+            <th>Spread</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="panel__note" id="marketNote"></p>
+  </section>
+
+  <!-- RANKINGS -->
+  <section class="panel" id="panel-rankings">
+    <div class="panel__header">
+      <h2>Leaderboard</h2>
+      <div class="panel__controls">
+        <select id="rankingType">
+          <option value="wealth">Wealth</option>
+          <option value="strength">Strength</option>
+          <option value="damage">Damage</option>
+          <option value="level">Level</option>
+        </select>
+        <button id="rankingsRefresh" class="btn">Refresh</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="rankingsTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Citizen</th>
+            <th>Country</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="panel__note" id="rankingsNote"></p>
+  </section>
+
+  <!-- BATTLES -->
+  <section class="panel" id="panel-battles">
+    <div class="panel__header">
+      <h2>Active Fronts</h2>
+      <div class="panel__controls">
+        <label class="checkbox"><input type="checkbox" id="battlesActiveOnly" checked /> active only</label>
+        <button id="battlesRefresh" class="btn">Refresh</button>
+      </div>
+    </div>
+    <div class="battle-grid" id="battleGrid"></div>
+    <p class="panel__note" id="battlesNote"></p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <p>Unofficial community dashboard. Not affiliated with WarEra. Data via a self-hosted proxy of the public WarEra tRPC API — <a href="https://app.warera.io" target="_blank" rel="noopener">app.warera.io</a>.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
