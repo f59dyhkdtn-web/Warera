@@ -1,40 +1,42 @@
 'use strict';
 
 /**
- * Thin client for the (unofficial, reverse-engineered) WarEra tRPC API.
+ * Thin client for WarEra's tRPC API, routed through the community gateway
+ * at gateway.warerastats.io by default (see below for why).
  *
  * IMPORTANT / READ ME:
- * There is no official public API spec. Everything here is based on
- * community reverse-engineering (majimawrks/warera-api-docs,
- * majimawrks/warera-fetch, gsipos/warera-tools). The base URL and
- * procedure names are believed correct as of writing, but the exact
- * *query string shape* tRPC expects (plain input vs. batch+superjson
- * wrapped input) can vary by server config and may drift over time.
+ * There is no official WarEra-run public API. This uses:
+ *  - Endpoint names & input parameters: officially documented by the
+ *    gateway itself at https://gateway.warerastats.io/ (fetched directly,
+ *    not secondhand — this is the most reliable source we have).
+ *  - Response *output* shapes: NOT documented anywhere found so far. Each
+ *    route in server.js / consumer in app.js logs the raw payload to the
+ *    console and extracts fields defensively — if a field looks wrong,
+ *    check the console log.
  *
- * If requests start failing:
- *   1. Open https://app.warera.io in a browser, open DevTools > Network,
- *      trigger the screen that shows market/ranking/battle data, and look
- *      at an actual request to api2.warera.io/trpc/... to see the real
- *      query string shape and copy it here.
- *   2. This client already tries the two most common tRPC shapes
- *      (see `buildUrl`) and falls back automatically, so a single
- *      procedure name changing on WarEra's side is the most likely
- *      break point, not the request format.
+ * WHY THE GATEWAY AND NOT api2.warera.io DIRECTLY:
+ * A couple of endpoints (transaction.getPaginatedTransactions, for one)
+ * return 401 from the primary API — they need a logged-in session, not
+ * just a public request. The gateway continuously scrapes and stores that
+ * data itself, so it can serve it back without needing your session. It
+ * also documents itself as free, keyless, drop-in-compatible with the
+ * primary API. Everything else this app uses is supported there too.
+ * Override with WARERA_API_BASE_URL if you ever want to point back at
+ * api2.warera.io directly (auth-requiring calls just won't work there).
  */
 
-// Configurable so you can point this at the community gateway
-// (https://gateway.warerastats.io/trpc/) instead of the primary API — the
-// gateway batches/dedupes/caches on its end, which helps if you're doing a
-// lot of reads. Must end with a trailing slash; normalized below if not.
-// The gateway requires an X-API-Key header (see WARERA_GATEWAY_API_KEY).
-const RAW_BASE_URL = process.env.WARERA_API_BASE_URL || 'https://api2.warera.io/trpc/';
+// Defaults to the community gateway (gateway.warerastats.io) rather than
+// api2.warera.io directly — see the note above for why. No API key needed
+// per the gateway's own docs (WARERA_GATEWAY_API_KEY below is unused
+// unless that changes; kept as an escape hatch). Must end with a trailing
+// slash; normalized below if not. Override with WARERA_API_BASE_URL to
+// point elsewhere, e.g. back at the primary API.
+const RAW_BASE_URL = process.env.WARERA_API_BASE_URL || 'https://gateway.warerastats.io/trpc/';
 const BASE_URL = (RAW_BASE_URL.endsWith('/') ? RAW_BASE_URL : `${RAW_BASE_URL}/`).replace(/\/$/, '');
 const GATEWAY_API_KEY = process.env.WARERA_GATEWAY_API_KEY || '';
 
-// WarEra community docs mention a 200 requests/minute limit on the primary
-// API. We stay comfortably under that with a simple token-bucket limiter.
-// (If you switch to the gateway, its own batching/caching means this limit
-// matters less, but there's no harm leaving it on.)
+// The gateway states its own rate limit as 200/min with request dedup and
+// 400ms batching built in; we still self-limit as a courtesy.
 const RATE_LIMIT_PER_MINUTE = 150;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
@@ -211,4 +213,70 @@ async function query(procedure, input, opts = {}) {
   throw lastError || new Error(`WarEra API request failed for ${procedure}`);
 }
 
-module.exports = { query, CACHE_TTL_MS };
+/**
+ * Pulls a batch of a paginated procedure's results into one flat array,
+ * following cursor-style pagination and stopping once either enough pages
+ * have been fetched, a hard record cap is hit, or the items themselves
+ * report timestamps older than `oldestMs` (whichever comes first).
+ *
+ * The exact shape of a paginated response (is the cursor called
+ * `nextCursor`? is the list called `items`?) isn't independently
+ * confirmed for this API — this tries the common tRPC infinite-query
+ * convention ({ items, nextCursor }) and a couple of fallbacks. If
+ * pagination silently stops after one page, that's the likely culprit —
+ * check what a raw response actually looks like and adjust `extractPage`.
+ *
+ * @param {string} procedure
+ * @param {object} baseInput input fields other than cursor/limit
+ * @param {object} [opts]
+ * @param {number} [opts.pageSize=100]
+ * @param {number} [opts.maxPages=20]
+ * @param {number} [opts.maxRecords=2000]
+ * @param {number} [opts.oldestMs] stop once items are older than this (epoch ms)
+ * @param {function} [opts.getTimestamp] (item) => epoch ms | null
+ */
+async function queryPaginated(procedure, baseInput, opts = {}) {
+  const pageSize = opts.pageSize ?? 100;
+  const maxPages = opts.maxPages ?? 20;
+  const maxRecords = opts.maxRecords ?? 2000;
+  const getTimestamp = opts.getTimestamp ?? (() => null);
+
+  const all = [];
+  let cursor;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const input = { ...baseInput, limit: pageSize };
+    if (cursor !== undefined) input.cursor = cursor;
+
+    const data = await query(procedure, input, { skipCache: true });
+
+    const items = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data?.data)
+      ? data.data
+      : Array.isArray(data?.results)
+      ? data.results
+      : [];
+
+    if (items.length === 0) break;
+    all.push(...items);
+
+    if (all.length >= maxRecords) break;
+
+    if (opts.oldestMs !== undefined) {
+      const oldestOnPage = Math.min(
+        ...items.map((it) => getTimestamp(it)).filter((t) => Number.isFinite(t))
+      );
+      if (Number.isFinite(oldestOnPage) && oldestOnPage < opts.oldestMs) break;
+    }
+
+    cursor = data?.nextCursor ?? data?.cursor ?? data?.meta?.nextCursor;
+    if (cursor === undefined || cursor === null) break;
+  }
+
+  return all;
+}
+
+module.exports = { query, queryPaginated, CACHE_TTL_MS };

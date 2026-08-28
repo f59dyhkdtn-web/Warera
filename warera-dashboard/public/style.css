@@ -457,6 +457,220 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
   .craft-card__body { grid-template-columns: 1fr; }
 }
 
+/* ---------- Craft ROI v2: rarity grid, breakdown, stat-roll ---------- */
+
+.time-filter {
+  display: flex;
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.time-filter button {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg-panel);
+  color: var(--ink-dim);
+  border: none;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.time-filter button:hover { color: var(--ink); }
+
+.time-filter button.is-active {
+  background: var(--brass-dim);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.rarity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.rarity-card {
+  position: relative;
+  text-align: left;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 14px 16px;
+  cursor: pointer;
+  font-family: var(--mono);
+  color: var(--ink);
+  transition: border-color 0.15s ease;
+}
+
+.rarity-card:hover { border-color: var(--brass-dim); }
+
+.rarity-card.is-selected {
+  border-color: var(--brass);
+  box-shadow: 0 0 0 1px var(--brass);
+}
+
+.rarity-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.confidence-chip {
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+}
+
+.confidence-high { border-color: #7fae5c; color: #7fae5c; }
+.confidence-medium { border-color: var(--brass-dim); color: var(--brass); }
+.confidence-low, .confidence-none { border-color: var(--line); color: var(--ink-dim); }
+
+.rarity-card__sample {
+  font-size: 11px;
+  color: var(--ink-dim);
+  margin-bottom: 6px;
+}
+
+.rarity-card__pct {
+  font-family: var(--display);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+
+.rarity-card__margin {
+  font-size: 12px;
+  color: var(--ink-dim);
+  margin-bottom: 10px;
+}
+
+.rarity-card__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--ink-dim);
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.best-roi-badge {
+  position: absolute;
+  top: -8px;
+  right: 10px;
+  background: var(--brass);
+  color: var(--bg);
+  font-family: var(--display);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 2px;
+}
+
+.craft-breakdown {
+  margin-top: 22px;
+}
+
+.breakdown-head h3 {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 10px;
+}
+
+.statroll-section {
+  margin-top: 22px;
+}
+
+.statroll-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.statroll-head h3 {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+.statroll-tabs {
+  display: flex;
+  gap: 1px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.statroll-tab {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg-panel);
+  color: var(--ink-dim);
+  border: none;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.statroll-tab.is-active {
+  background: var(--brass-dim);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.statroll-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.statroll-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+}
+
+.statroll-card__value {
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--brass);
+}
+
+.statroll-card__count {
+  font-size: 10px;
+  color: var(--ink-dim);
+  margin-bottom: 6px;
+}
+
+.statroll-card__price {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.statroll-card__diff {
+  font-size: 11px;
+  margin-top: 4px;
+}
+
 @media (max-width: 640px) {
   .masthead, .tabs, .panels { padding-left: 16px; padding-right: 16px; }
 }

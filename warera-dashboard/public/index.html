@@ -60,10 +60,11 @@
       <h2>Leaderboard</h2>
       <div class="panel__controls">
         <select id="rankingType">
-          <option value="wealth">Wealth</option>
-          <option value="strength">Strength</option>
-          <option value="damage">Damage</option>
-          <option value="level">Level</option>
+          <option value="userWealth">Wealth</option>
+          <option value="userDamages">Damage</option>
+          <option value="userLevel">Level</option>
+          <option value="userBounty">Bounty</option>
+          <option value="userCasesOpened">Cases Opened</option>
         </select>
         <button id="rankingsRefresh" class="btn">Refresh</button>
       </div>
@@ -100,34 +101,28 @@
   <!-- CRAFT ROI -->
   <section class="panel" id="panel-craft">
     <div class="panel__header">
-      <h2>Craft vs Buy</h2>
+      <h2>Craft ROI</h2>
       <div class="panel__controls">
-        <select id="craftRarity">
-          <option value="common">Common</option>
-          <option value="uncommon">Uncommon</option>
-          <option value="rare">Rare</option>
-          <option value="epic">Epic</option>
-          <option value="legendary">Legendary</option>
-          <option value="mythic">Mythic</option>
-        </select>
-        <select id="craftType">
-          <option value="Weapon">Weapon</option>
-          <option value="Helmet">Helmet</option>
-          <option value="Chest">Chest</option>
-          <option value="Gloves">Gloves</option>
-          <option value="Pants">Pants</option>
-          <option value="Boots">Boots</option>
-        </select>
-        <button id="craftRoll" class="btn">Roll Random Item</button>
+        <div class="time-filter" id="timeFilter">
+          <button data-hours="1">1h</button>
+          <button data-hours="2">2h</button>
+          <button data-hours="4">4h</button>
+          <button data-hours="8">8h</button>
+          <button data-hours="16">16h</button>
+          <button data-hours="24" class="is-active">24h</button>
+        </div>
+        <button id="craftRefresh" class="btn">Refresh</button>
       </div>
     </div>
 
-    <div class="craft-card" id="craftCard"></div>
+    <div class="rarity-grid" id="rarityGrid"></div>
+    <div class="craft-breakdown" id="craftBreakdown"></div>
+    <div class="statroll-section" id="statrollSection"></div>
 
     <p class="panel__note" id="craftNote">
-      Craft cost uses live scraps/steel prices. Market price is the average
-      of actual recent sales for that item — pulled from WarEra's trade
-      history, not a live order-book quote (equipment doesn't have one).
+      Craft cost uses live scraps/steel prices. Sale prices &amp; sample
+      sizes come from WarEra's actual trade history within the selected
+      time window, not a live order-book quote (equipment doesn't have one).
     </p>
   </section>
 

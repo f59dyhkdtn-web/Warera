@@ -5,21 +5,22 @@ player/country rankings, and active battles.
 
 ## What this is (and isn't)
 
-WarEra has **no official public API**. Everything here talks to the same backend the
-game's own web client uses (`api2.warera.io`), based on community reverse-engineering:
+WarEra has **no official public API**. This app talks to
+[**gateway.warerastats.io**](https://gateway.warerastats.io/) — a free, keyless,
+community-run proxy that's officially documented (endpoint names and input
+parameters are confirmed straight from that page) and mirrors the real WarEra API
+1:1. It also has its own scraped database for a few things the primary API won't
+serve without a logged-in session — transaction history being the one this app
+needs, for the Craft ROI tab.
 
-- Endpoint names: [Context7's WarEra API index](https://context7.com/websites/api2_warera_io)
-- Response shapes / conventions: [majimawrks/warera-api-docs](https://majimawrks.github.io/warera-api-docs/) and [majimawrks/warera-fetch](https://github.com/majimawrks/warera-fetch)
+Two things are still not guaranteed, worth knowing:
 
-This means two things could be slightly off and need a small fix on your end:
-
-1. **The exact query-string format.** `lib/warera.js` tries the two most common tRPC
-   request shapes automatically, so this usually isn't something you need to touch.
-2. **The exact field names in each response** (e.g. is a price called `sellPrice` or
-   `bestSell`?). The frontend (`public/app.js`) tries a few likely names for each field
-   and logs the raw API response to the browser console — open DevTools, look at what
-   came back, and add the real field name to the relevant `pick(...)` call if a column
-   shows up empty.
+1. **Response shapes aren't documented anywhere found so far** — only the request
+   parameters are. Every route logs its raw payload to the browser console for
+   exactly this reason; if a column looks empty or wrong, check the console.
+2. It's still a third party, not WarEra itself — it could change or go away.
+   `WARERA_API_BASE_URL` env var lets you point back at `https://api2.warera.io/trpc/`
+   directly if needed (transaction history won't work there — see Craft ROI section).
 
 Respect the game's rate limits — the client here caps itself at 150 req/min (WarEra's
 community docs mention a 200/min ceiling) and caches responses for 15–60 seconds
@@ -109,23 +110,29 @@ a fraction of it.
 
 ## Craft ROI tab
 
-Compares the cost to craft a piece of equipment against its actual recent sale prices.
+Modeled after community "crafting ROI" trackers: a grid of all 6 rarities showing
+margin %, sample size, and profit odds; click one to see a breakdown by equipment
+slot; below that, average sale price broken down by the item's specific stat roll.
+A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
 
-- **Craft cost is live and calculable**: scraps/steel required per rarity are fixed,
-  documented in-game values (hardcoded in `app.js`), multiplied by the *live* scraps
-  and steel prices your dashboard already pulls from `itemTrading.getPrices`.
-- **Market price is a real historical average**, pulled from `transaction.getPaginatedTransactions`
-  (the trade log) via `/api/market/transactions`. This endpoint's exact response shape
-  isn't independently confirmed — `getEquipmentTransactions()` in `app.js` logs the raw
-  payload to the browser console and tries several plausible field names
-  (`itemCode`/`item`/`code`, `slot`/`equipmentType`/`itemType`, `rarity`/`quality`,
-  `price`/`amount`/`value`). **If a card shows "No matching transactions found,"** open
-  the console, look at `market/transactions raw payload`, and adjust the field names in
-  `getEquipmentTransactions()` to match what's actually there.
-- "Roll Random Item" picks a rarity using WarEra's published Case drop odds, and an
-  equipment slot assuming the stated 30% Weapon / 70% other-slots split is even across
-  the other five slots — WarEra hasn't published that finer breakdown, so that part is
-  a documented assumption, not a confirmed fact.
+- **Craft cost**: live, from scraps/steel quantities per rarity (hardcoded, confirmed
+  static in-game values) × current scraps/steel prices from `itemTrading.getPrices`.
+- **Sale data**: pulled once per ~3 minutes from `/api/craft/history`, which pages
+  through `transaction.getPaginatedTransactions` (filtered to `transactionType:
+  itemMarket`) accumulating up to 2000 records or 24 hours of trades, whichever comes
+  first. The time-window buttons just re-filter that already-fetched batch client-side
+  — no extra API calls per click.
+- **Rarity/slot inference and stat-roll values are NOT confirmed against a real schema.**
+  Only the *request* parameters for `transaction.getPaginatedTransactions` are
+  documented (by the gateway); the *response* shape isn't. `parseTransaction()` in
+  `app.js` tries several plausible field names for rarity, slot, price, and stat value,
+  and logs a sample of the raw payload to the console. **The stat-roll grid is the part
+  most likely to come up empty** — if it does, that section says so explicitly rather
+  than showing fake numbers, and the console log is where to find the real field name
+  to add.
+- Sample-size confidence badges (high/medium/low) use thresholds I picked (100 / 20
+  sales) — not a WarEra-published figure, just a reasonable line so a 2-sale average
+  isn't shown with the same weight as a 500-sale one.
 
 ## Disclaimer
 

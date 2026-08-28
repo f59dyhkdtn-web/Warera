@@ -20,10 +20,11 @@ function handle(promise, res) {
 
 // ---- Market ----------------------------------------------------------------
 
-// GET /api/market/prices?item=IRON  (item optional — omit for all items)
+// GET /api/market/prices
+// itemTrading.getPrices takes NO parameters (confirmed) — it always
+// returns every tradeable item's price. Filtering happens client-side.
 app.get('/api/market/prices', (req, res) => {
-  const input = req.query.item ? { itemCode: req.query.item } : undefined;
-  handle(warera.query('itemTrading.getPrices', input, { cacheCategory: 'market' }), res);
+  handle(warera.query('itemTrading.getPrices', undefined, { cacheCategory: 'market' }), res);
 });
 
 // GET /api/market/orders?item=IRON  (item required)
@@ -37,45 +38,103 @@ app.get('/api/market/orders', (req, res) => {
   );
 });
 
-// GET /api/market/transactions?item=CODE&limit=100
+// GET /api/market/transactions?item=CODE&limit=100&transactionType=itemMarket
 // Historical trade log — used by the Craft ROI tab to compute real average
-// sale prices for equipment, since equipment has no live order-book price.
+// sale prices for equipment (equipment has no live order-book price).
+// transactionType defaults to "itemMarket" (equipment buy/sell), since the
+// full log also includes wages, donations, case openings, crafting, etc.
+// Valid transactionType values: applicationFee, trading, itemMarket, wage,
+// donation, articleTip, openCase, craftItem, dismantleItem, battleLoot.
 app.get('/api/market/transactions', (req, res) => {
-  const input = { limit: req.query.limit ? Number(req.query.limit) : 100 };
+  const input = {
+    limit: req.query.limit ? Number(req.query.limit) : 100,
+    transactionType: req.query.transactionType || 'itemMarket',
+  };
   if (req.query.item) input.itemCode = req.query.item;
   handle(warera.query('transaction.getPaginatedTransactions', input, { cacheTtlMs: 60_000 }), res);
 });
 
+// GET /api/craft/history?hours=24&transactionType=itemMarket
+// Aggregates several pages of transaction.getPaginatedTransactions into
+// one larger, time-windowed batch (so the frontend's 1h/2h/.../24h filter
+// buttons can re-slice client-side without hitting the API again). Result
+// is cached here for a few minutes since the pagination loop itself is
+// several API calls.
+const historyCache = new Map(); // key -> { expiresAt, data }
+const HISTORY_CACHE_TTL_MS = 3 * 60_000;
+
+app.get('/api/craft/history', async (req, res) => {
+  const hours = req.query.hours ? Number(req.query.hours) : 24;
+  const transactionType = req.query.transactionType || 'itemMarket';
+  const cacheKey = `${transactionType}:${hours}`;
+
+  const cached = historyCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return res.json({ ok: true, data: cached.data, cached: true });
+  }
+
+  try {
+    const oldestMs = Date.now() - hours * 60 * 60 * 1000;
+    const getTimestamp = (tx) => {
+      const raw = tx.createdAt ?? tx.timestamp ?? tx.date ?? tx.time ?? null;
+      const t = raw ? new Date(raw).getTime() : NaN;
+      return Number.isFinite(t) ? t : null;
+    };
+    const transactions = await warera.queryPaginated(
+      'transaction.getPaginatedTransactions',
+      { transactionType },
+      { pageSize: 100, maxPages: 20, maxRecords: 2000, oldestMs, getTimestamp }
+    );
+    historyCache.set(cacheKey, { data: transactions, expiresAt: Date.now() + HISTORY_CACHE_TTL_MS });
+    res.json({ ok: true, data: transactions, cached: false });
+  } catch (err) {
+    console.error(err);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 // ---- Rankings ---------------------------------------------------------------
 
-// GET /api/rankings?type=wealth&limit=50
+// GET /api/rankings?type=userWealth&limit=50
+// ranking.getRanking's required param is "rankingType" (not "type"), with
+// a fixed enum of values — confirmed via the gateway's docs. There's no
+// "strength" category; valid options include userWealth, userDamages,
+// userLevel, userBounty, userReferrals, userCasesOpened, and country/mu
+// equivalents (countryWealth, muDamages, etc.).
 app.get('/api/rankings', (req, res) => {
   const input = {
-    type: req.query.type || 'wealth',
+    rankingType: req.query.type || 'userWealth',
     limit: req.query.limit ? Number(req.query.limit) : 50,
   };
   handle(warera.query('ranking.getRanking', input, { cacheCategory: 'rankings' }), res);
 });
 
-// GET /api/battle-rankings?battleId=...&side=attacker
+// GET /api/battle-rankings?battleId=...&side=attacker&dataType=damage&type=user
+// battleRanking.getRanking requires dataType (damage|points|money), type
+// (user|country|mu), and side (attacker|defender|merged) — all three are
+// required, not optional as originally guessed. battleId narrows to one
+// battle; omit it for a global ranking.
 app.get('/api/battle-rankings', (req, res) => {
-  if (!req.query.battleId) {
-    return res.status(400).json({ ok: false, error: 'Query param "battleId" is required' });
-  }
-  const input = { battleId: req.query.battleId };
-  if (req.query.side) input.side = req.query.side;
+  const input = {
+    dataType: req.query.dataType || 'damage',
+    type: req.query.type || 'user',
+    side: req.query.side || 'merged',
+  };
+  if (req.query.battleId) input.battleId = req.query.battleId;
   handle(warera.query('battleRanking.getRanking', input, { cacheCategory: 'rankings' }), res);
 });
 
 // ---- Battles ------------------------------------------------------------------
 
-// GET /api/battles?active=true&limit=20
+// GET /api/battles?active=true&limit=20&countryId=...
+// battle.getBattles' real param names are isActive (not active) and
+// countryId (not country).
 app.get('/api/battles', (req, res) => {
   const input = {
     limit: req.query.limit ? Number(req.query.limit) : 20,
   };
-  if (req.query.active !== undefined) input.active = req.query.active === 'true';
-  if (req.query.country) input.country = req.query.country;
+  if (req.query.active !== undefined) input.isActive = req.query.active === 'true';
+  if (req.query.countryId) input.countryId = req.query.countryId;
   handle(warera.query('battle.getBattles', input, { cacheCategory: 'battles' }), res);
 });
 
@@ -107,11 +166,12 @@ app.get('/api/countries', (req, res) => {
 });
 
 // GET /api/search?q=...
+// search.searchAnything's real param name is "searchText" (not "query").
 app.get('/api/search', (req, res) => {
   if (!req.query.q) {
     return res.status(400).json({ ok: false, error: 'Query param "q" is required' });
   }
-  handle(warera.query('search.searchAnything', { query: req.query.q }, { cacheTtlMs: 15_000 }), res);
+  handle(warera.query('search.searchAnything', { searchText: req.query.q }, { cacheTtlMs: 15_000 }), res);
 });
 
 // GET /api/users/:id
@@ -119,10 +179,11 @@ app.get('/api/users/:id', (req, res) => {
   handle(warera.query('user.getUserById', { userId: req.params.id }, { cacheTtlMs: 60_000 }), res);
 });
 
-// GET /api/events?limit=20&country=Indonesia
+// GET /api/events?limit=20&countryId=...
+// event.getEventsPaginated's real param name is "countryId" (not "country").
 app.get('/api/events', (req, res) => {
   const input = { limit: req.query.limit ? Number(req.query.limit) : 20 };
-  if (req.query.country) input.country = req.query.country;
+  if (req.query.countryId) input.countryId = req.query.countryId;
   handle(warera.query('event.getEventsPaginated', input, { cacheCategory: 'battles' }), res);
 });
 

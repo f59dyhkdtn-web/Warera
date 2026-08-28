@@ -249,28 +249,27 @@ const CRAFT_COST = {
   legendary: { scraps: 486, steel: 16 },
   mythic: { scraps: 1458, steel: 32 },
 };
-
-// Odds a Case drops each rarity — as stated by WarEra's own game guide.
-const RARITY_ODDS = { common: 62, uncommon: 30, rare: 7.1, epic: 0.85, legendary: 0.04, mythic: 0.01 };
+const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'];
 
 // Odds a Case has drop each equipment slot: a stated 30% Weapon / 70%
 // "other slot" split. WarEra doesn't publish the breakdown *within* that
 // 70%, so this assumes the remaining five slots are equally likely —
-// flagged as an assumption, not a fact.
+// flagged as an assumption, not a fact. Used both for a single "roll" and
+// as the weighting for a rarity's overall P(profit).
 const TYPE_ODDS = { Weapon: 30, Helmet: 14, Chest: 14, Gloves: 14, Pants: 14, Boots: 14 };
+const SLOTS = Object.keys(TYPE_ODDS);
+const ARMOR_SLOTS = SLOTS.filter((s) => s !== 'Weapon'); // stat-roll grid excludes Weapon
 
-function weightedPick(oddsMap) {
-  const entries = Object.entries(oddsMap);
-  const total = entries.reduce((sum, [, w]) => sum + w, 0);
-  let roll = Math.random() * total;
-  for (const [key, weight] of entries) {
-    if (roll < weight) return key;
-    roll -= weight;
-  }
-  return entries[entries.length - 1][0];
-}
+// Sample-size thresholds for the confidence badge. Not a WarEra figure —
+// just a reasonable line to draw so a 2-sale "average" isn't presented
+// with the same weight as a 500-sale one.
+const CONFIDENCE = { high: 100, medium: 20 };
 
-let materialPriceCache = null; // { scraps: n, steel: n, ... } — refreshed per render
+let materialPriceCache = null;
+let craftHistoryCache = null; // { fetchedAt, hours, transactions: parsed[] }
+let craftHoursWindow = 24;
+let selectedRarity = 'epic';
+let selectedStatSlot = 'Chest';
 
 async function getMaterialPrices() {
   const data = await api('/api/market/prices');
@@ -281,130 +280,259 @@ async function getMaterialPrices() {
 }
 
 /**
- * Historical equipment sale prices, from the actual trade log
- * (transaction.getPaginatedTransactions). This endpoint's exact response
- * shape isn't independently documented — it's used elsewhere per a
- * secondhand doc, but we don't have the field-level detail. So: fetch a
- * batch of recent transactions, log the raw payload for verification, and
- * try a handful of plausible field names per transaction. If a column
- * looks empty/wrong, check the console log and adjust the `pick(...)`
- * calls in this function.
+ * Turns one raw transaction record into a normalized shape. Field names
+ * aren't independently confirmed for this endpoint's *output* (only its
+ * input parameters are documented) — this tries several plausible names
+ * per field. If rarity/slot/statValue come back empty across the board,
+ * check `console.log('craft history raw sample', ...)` for the real names
+ * and adjust the `pick(...)` lists below.
  */
-async function getEquipmentTransactions(rarity, type) {
-  const data = await api('/api/market/transactions?limit=200');
-  console.log('market/transactions raw payload:', data);
-  const rows = asArray(data);
+function parseTransaction(tx) {
+  const itemCode = pick(tx, ['itemCode', 'item', 'code'], '');
+  const rarityRaw = pick(tx, ['rarity', 'itemRarity', 'quality'], '');
+  const slotRaw = pick(tx, ['slot', 'equipmentType', 'itemType', 'type'], '');
+  const price = Number(pick(tx, ['price', 'amount', 'totalPrice', 'value'], null));
+  const statValue = Number(
+    pick(tx, ['statValue', 'armor', 'rollValue', 'stat', 'primaryStat', 'itemStat'], null)
+  );
+  const tsRaw = pick(tx, ['createdAt', 'timestamp', 'date', 'time'], null);
+  const timestampMs = tsRaw ? new Date(tsRaw).getTime() : null;
 
-  const matches = rows
-    .map((tx) => ({
-      itemCode: pick(tx, ['itemCode', 'item', 'code'], ''),
-      slot: pick(tx, ['slot', 'equipmentType', 'itemType', 'type'], ''),
-      rarity: pick(tx, ['rarity', 'itemRarity', 'quality'], ''),
-      price: Number(pick(tx, ['price', 'amount', 'totalPrice', 'value'], null)),
-      timestamp: pick(tx, ['createdAt', 'timestamp', 'date', 'time'], null),
-    }))
-    .filter((tx) => Number.isFinite(tx.price))
-    .filter((tx) => {
-      const haystack = `${tx.itemCode} ${tx.slot}`.toLowerCase();
-      const rarityMatch = tx.rarity
-        ? tx.rarity.toString().toLowerCase() === rarity.toLowerCase()
-        : haystack.includes(rarity.toLowerCase());
-      const typeMatch = haystack.includes(type.toLowerCase());
-      return rarityMatch && typeMatch;
-    });
+  const haystack = `${itemCode} ${slotRaw}`.toLowerCase();
+  const rarity = RARITIES.find((r) => rarityRaw.toString().toLowerCase() === r || haystack.includes(r));
+  const slot = SLOTS.find((s) => slotRaw.toString().toLowerCase() === s.toLowerCase() || haystack.includes(s.toLowerCase()));
 
-  return { all: rows, matches };
+  return {
+    itemCode,
+    rarity: rarity || null,
+    slot: slot || null,
+    price: Number.isFinite(price) ? price : null,
+    statValue: Number.isFinite(statValue) ? statValue : null,
+    timestampMs: Number.isFinite(timestampMs) ? timestampMs : null,
+  };
 }
 
-function renderCraftCard(rarity, type, prices, txResult) {
-  const card = $('#craftCard');
+async function fetchCraftHistory() {
+  const now = Date.now();
+  if (craftHistoryCache && now - craftHistoryCache.fetchedAt < 3 * 60_000) {
+    return craftHistoryCache.transactions;
+  }
+  const data = await api('/api/craft/history?hours=24&transactionType=itemMarket');
+  console.log('craft history raw payload (first 3):', Array.isArray(data) ? data.slice(0, 3) : data);
+  const raw = asArray(data);
+  const transactions = raw.map(parseTransaction).filter((tx) => tx.price !== null);
+  craftHistoryCache = { fetchedAt: now, transactions };
+  return transactions;
+}
+
+function withinWindow(transactions, hours) {
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  return transactions.filter((tx) => tx.timestampMs === null || tx.timestampMs >= cutoff);
+}
+
+function craftCostFor(rarity, prices) {
   const cost = CRAFT_COST[rarity];
-  const scrapsPrice = prices.scraps;
-  const steelPrice = prices.steel;
-  const haveMaterialPrices = Number.isFinite(scrapsPrice) && Number.isFinite(steelPrice);
+  if (!Number.isFinite(prices.scraps) || !Number.isFinite(prices.steel)) return null;
+  return cost.scraps * prices.scraps + cost.steel * prices.steel;
+}
 
-  const scrapsCost = haveMaterialPrices ? cost.scraps * scrapsPrice : null;
-  const steelCost = haveMaterialPrices ? cost.steel * steelPrice : null;
-  const craftTotal = haveMaterialPrices ? scrapsCost + steelCost : null;
-
-  const matches = txResult.matches;
-  const avgPrice = matches.length
-    ? matches.reduce((sum, tx) => sum + tx.price, 0) / matches.length
+function statsFor(transactions, rarity, slot, craftTotal) {
+  const matches = transactions.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
+  const count = matches.length;
+  const avgPrice = count ? matches.reduce((s, tx) => s + tx.price, 0) / count : null;
+  const marginAbs = avgPrice !== null && craftTotal !== null ? avgPrice - craftTotal : null;
+  const marginPct = marginAbs !== null && craftTotal > 0 ? (marginAbs / craftTotal) * 100 : null;
+  const pProfit = craftTotal !== null && count
+    ? (matches.filter((tx) => tx.price > craftTotal).length / count) * 100
     : null;
-  const recent = [...matches]
-    .sort((a, b) => (b.timestamp ?? 0) < (a.timestamp ?? 0) ? -1 : 1)
-    .slice(0, 5);
+  return { count, avgPrice, marginAbs, marginPct, pProfit };
+}
 
-  card.innerHTML = `
-    <div class="craft-card__head">
-      <span class="rarity-chip rarity-${rarity}">${rarity}</span>
-      <h3>${type}</h3>
+function confidenceLabel(count) {
+  if (count >= CONFIDENCE.high) return { label: 'high confidence', cls: 'high' };
+  if (count >= CONFIDENCE.medium) return { label: 'medium confidence', cls: 'medium' };
+  if (count > 0) return { label: 'low confidence', cls: 'low' };
+  return { label: 'no data', cls: 'none' };
+}
+
+function renderRarityGrid(transactions, prices) {
+  const grid = $('#rarityGrid');
+  const perRarity = RARITIES.map((rarity) => {
+    const craftTotal = craftCostFor(rarity, prices);
+    // Pools every sale of this rarity across all slots — a reasonable
+    // stand-in for a slot-odds-weighted average, since real trade volume
+    // per slot roughly tracks the same odds naturally.
+    const overall = statsFor(transactions, rarity, null, craftTotal);
+    return { rarity, craftTotal, ...overall };
+  });
+
+  const best = perRarity
+    .filter((r) => r.count >= CONFIDENCE.medium && r.marginPct !== null)
+    .sort((a, b) => b.marginPct - a.marginPct)[0];
+
+  grid.innerHTML = perRarity
+    .map((r) => {
+      const conf = confidenceLabel(r.count);
+      const isBest = best && r.rarity === best.rarity;
+      const isSelected = r.rarity === selectedRarity;
+      const pctText = r.marginPct !== null ? `${r.marginPct >= 0 ? '+' : ''}${r.marginPct.toFixed(1)}%` : '—';
+      const pctCls = r.marginPct === null ? '' : r.marginPct >= 0 ? 'up' : 'down';
+      return `
+        <button class="rarity-card rarity-card--${r.rarity} ${isSelected ? 'is-selected' : ''}" data-rarity="${r.rarity}">
+          <div class="rarity-card__top">
+            <span class="rarity-chip rarity-${r.rarity}">${r.rarity}</span>
+            <span class="confidence-chip confidence-${conf.cls}">${conf.label}</span>
+          </div>
+          <div class="rarity-card__sample">${r.count} sale${r.count === 1 ? '' : 's'}</div>
+          <div class="rarity-card__pct ${pctCls}">${pctText}</div>
+          <div class="rarity-card__margin">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)} per craft` : '—'}</div>
+          <div class="rarity-card__foot">
+            <span>Cost ${r.craftTotal !== null ? fmtNum(r.craftTotal) : '—'} → Avg ${r.avgPrice !== null ? fmtNum(r.avgPrice) : '—'}</span>
+            <span>P(profit) ${r.pProfit !== null ? r.pProfit.toFixed(1) + '%' : '—'}</span>
+          </div>
+          ${isBest ? '<span class="best-roi-badge">Best ROI</span>' : ''}
+        </button>
+      `;
+    })
+    .join('');
+
+  $$('.rarity-card', grid).forEach((card) => {
+    card.addEventListener('click', () => {
+      selectedRarity = card.dataset.rarity;
+      renderCraftRoi();
+    });
+  });
+}
+
+function renderBreakdown(transactions, prices) {
+  const el = $('#craftBreakdown');
+  const craftTotal = craftCostFor(selectedRarity, prices);
+
+  const rows = SLOTS.map((slot) => {
+    const s = statsFor(transactions, selectedRarity, slot, craftTotal);
+    const odds = TYPE_ODDS[slot];
+    return { slot, odds, ...s };
+  });
+
+  el.innerHTML = `
+    <div class="breakdown-head">
+      <h3>${selectedRarity[0].toUpperCase()}${selectedRarity.slice(1)} — by equipment slot</h3>
     </div>
-    <div class="craft-card__body">
-      <div class="craft-col">
-        <h4>Craft cost <span class="live-tag">live</span></h4>
-        <div class="craft-line"><span>${fmtNum(cost.scraps)} Scraps @ ${haveMaterialPrices ? fmtNum(scrapsPrice) : '—'}</span><span class="num">${scrapsCost !== null ? fmtNum(scrapsCost) : '—'}</span></div>
-        <div class="craft-line"><span>${fmtNum(cost.steel)} Steel @ ${haveMaterialPrices ? fmtNum(steelPrice) : '—'}</span><span class="num">${steelCost !== null ? fmtNum(steelCost) : '—'}</span></div>
-        <div class="craft-line craft-line--total"><span>Total to craft</span><span class="num">${craftTotal !== null ? fmtNum(craftTotal) : '—'}</span></div>
-      </div>
-      <div class="craft-col">
-        <h4>Market price <span class="live-tag">from ${matches.length} sale${matches.length === 1 ? '' : 's'}</span></h4>
-        ${
-          avgPrice !== null
-            ? `
-          <div class="craft-line craft-line--total"><span>Avg sale price</span><span class="num">${fmtNum(avgPrice)}</span></div>
-          ${recent
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Slot</th><th>Odds</th><th>Avg Sale Price</th><th>Margin</th><th>P(profit)</th><th>Sales Seen</th></tr>
+        </thead>
+        <tbody>
+          ${rows
             .map(
-              (tx) =>
-                `<div class="craft-line craft-line--sm"><span>${tx.timestamp ? new Date(tx.timestamp).toLocaleDateString() : 'recent sale'}</span><span class="num">${fmtNum(tx.price)}</span></div>`
+              (r) => `
+            <tr>
+              <td>${r.slot}</td>
+              <td class="num">${r.odds}%</td>
+              <td class="num">${r.avgPrice !== null ? fmtNum(r.avgPrice) : '—'}</td>
+              <td class="num ${r.marginAbs === null ? '' : r.marginAbs >= 0 ? 'up' : 'down'}">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)}` : '—'}</td>
+              <td class="num">${r.pProfit !== null ? r.pProfit.toFixed(1) + '%' : '—'}</td>
+              <td class="num">${r.count}</td>
+            </tr>
+          `
             )
             .join('')}
-        `
-            : `<p class="empty-state" style="padding:10px 0;">No matching transactions found in the last ${txResult.all.length} trades. Check the console log — the item/rarity field names may need adjusting, or this combo just hasn't traded recently. Try widening with a bigger transaction sample or a different rarity.</p>`
-        }
-      </div>
+        </tbody>
+      </table>
     </div>
-    <div class="craft-verdict" id="craftVerdict"></div>
   `;
-
-  const verdict = $('#craftVerdict');
-  if (craftTotal === null || avgPrice === null) {
-    verdict.textContent = '';
-  } else {
-    const savings = avgPrice - craftTotal;
-    const pct = craftTotal > 0 ? (savings / craftTotal) * 100 : 0;
-    if (savings >= 0) {
-      verdict.innerHTML = `<span class="up">Craft it</span> — saves ${fmtNum(savings)} vs. the average sale price (${pct.toFixed(1)}% cheaper to craft)`;
-    } else {
-      verdict.innerHTML = `<span class="down">Buy it</span> — buying averages ${fmtNum(Math.abs(savings))} cheaper (${Math.abs(pct).toFixed(1)}% cheaper to buy)`;
-    }
-  }
 }
 
-async function loadCraftRoi() {
-  const rarity = $('#craftRarity').value;
-  const type = $('#craftType').value;
-  const card = $('#craftCard');
-  card.innerHTML = '<p class="empty-state">loading material prices &amp; transaction history…</p>';
+function renderStatRollSection(transactions, prices) {
+  const el = $('#statrollSection');
+  const craftTotal = craftCostFor(selectedRarity, prices);
+  const matches = transactions.filter((tx) => tx.rarity === selectedRarity && tx.slot === selectedStatSlot);
+  const withStat = matches.filter((tx) => tx.statValue !== null);
+
+  const tabs = ARMOR_SLOTS
+    .map((slot) => `<button class="statroll-tab ${slot === selectedStatSlot ? 'is-active' : ''}" data-slot="${slot}">${slot}</button>`)
+    .join('');
+
+  if (withStat.length === 0) {
+    el.innerHTML = `
+      <div class="statroll-head">
+        <h3>Value per stat roll</h3>
+        <div class="statroll-tabs">${tabs}</div>
+      </div>
+      <p class="empty-state">
+        No stat-roll value found in the transaction data for ${selectedRarity} ${selectedStatSlot}
+        in this window (${matches.length} sale${matches.length === 1 ? '' : 's'} matched, but none carried a
+        recognizable stat field). Check the console log for the raw transaction shape —
+        the field name may need adjusting in <code>parseTransaction()</code>, or this
+        combo just hasn't traded recently.
+      </p>
+    `;
+  } else {
+    const byValue = new Map();
+    withStat.forEach((tx) => {
+      if (!byValue.has(tx.statValue)) byValue.set(tx.statValue, []);
+      byValue.get(tx.statValue).push(tx.price);
+    });
+    const rows = [...byValue.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([statValue, prices2]) => {
+        const avg = prices2.reduce((s, p) => s + p, 0) / prices2.length;
+        const diff = craftTotal !== null ? avg - craftTotal : null;
+        return { statValue, count: prices2.length, avg, diff };
+      });
+
+    el.innerHTML = `
+      <div class="statroll-head">
+        <h3>Value per stat roll — ${selectedRarity} ${selectedStatSlot}</h3>
+        <div class="statroll-tabs">${tabs}</div>
+      </div>
+      <div class="statroll-grid">
+        ${rows
+          .map(
+            (r) => `
+          <div class="statroll-card">
+            <div class="statroll-card__value">${r.statValue}</div>
+            <div class="statroll-card__count">${r.count}× seen</div>
+            <div class="statroll-card__price">${fmtNum(r.avg)}</div>
+            <div class="statroll-card__diff ${r.diff === null ? '' : r.diff >= 0 ? 'up' : 'down'}">${r.diff !== null ? `${r.diff >= 0 ? '+' : ''}${fmtNum(r.diff)} vs craft` : ''}</div>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `;
+  }
+
+  $$('.statroll-tab', el).forEach((tab) => {
+    tab.addEventListener('click', () => {
+      selectedStatSlot = tab.dataset.slot;
+      renderCraftRoi();
+    });
+  });
+}
+
+async function renderCraftRoi() {
+  const grid = $('#rarityGrid');
+  const breakdown = $('#craftBreakdown');
+  const statroll = $('#statrollSection');
 
   try {
-    const [prices, txResult] = await Promise.all([
+    const [prices, allTransactions] = await Promise.all([
       materialPriceCache ?? getMaterialPrices(),
-      getEquipmentTransactions(rarity, type),
+      fetchCraftHistory(),
     ]);
     materialPriceCache = prices;
-    renderCraftCard(rarity, type, prices, txResult);
-  } catch (err) {
-    card.innerHTML = `<p class="empty-state">Failed to load: ${err.message}</p>`;
-  }
-}
+    const windowed = withinWindow(allTransactions, craftHoursWindow);
 
-function rollCraftItem() {
-  const rarity = weightedPick(RARITY_ODDS);
-  const type = weightedPick(TYPE_ODDS);
-  $('#craftRarity').value = rarity;
-  $('#craftType').value = type;
-  loadCraftRoi();
+    renderRarityGrid(windowed, prices);
+    renderBreakdown(windowed, prices);
+    renderStatRollSection(windowed, prices);
+  } catch (err) {
+    grid.innerHTML = `<p class="empty-state">Failed to load: ${err.message}</p>`;
+    breakdown.innerHTML = '';
+    statroll.innerHTML = '';
+  }
 }
 
 // ---- Wire up -------------------------------------------------------------
@@ -421,14 +549,23 @@ function init() {
   $('#battlesRefresh').addEventListener('click', loadBattles);
   $('#battlesActiveOnly').addEventListener('change', loadBattles);
 
-  $('#craftRoll').addEventListener('click', rollCraftItem);
-  $('#craftRarity').addEventListener('change', loadCraftRoi);
-  $('#craftType').addEventListener('change', loadCraftRoi);
+  $('#craftRefresh').addEventListener('click', () => {
+    craftHistoryCache = null; // force a fresh fetch
+    renderCraftRoi();
+  });
+  $$('#timeFilter button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('#timeFilter button').forEach((b) => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      craftHoursWindow = Number(btn.dataset.hours);
+      renderCraftRoi();
+    });
+  });
 
   loadMarket();
   loadRankings();
   loadBattles();
-  loadCraftRoi();
+  renderCraftRoi();
   refreshTicker();
   setInterval(refreshTicker, 20_000);
 }
