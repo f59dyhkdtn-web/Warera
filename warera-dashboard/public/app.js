@@ -86,6 +86,25 @@ async function refreshTicker() {
 
 // ---- Market -------------------------------------------------------------
 
+/**
+ * itemTrading.getPrices returns a flat object — { itemCode: price, ... } —
+ * not a list of rows. Some other endpoints on this API DO return arrays,
+ * so this still checks for that shape first in case WarEra changes it
+ * later, then falls back to treating a plain object as a code->price map.
+ */
+function marketRowsFrom(data) {
+  if (Array.isArray(data)) {
+    return data.map((row) => ({
+      item: pick(row, ['itemCode', 'code', 'item', 'name']),
+      price: Number(pick(row, ['price', 'sellPrice', 'bestSell', 'value'], null)),
+    }));
+  }
+  if (data && typeof data === 'object') {
+    return Object.entries(data).map(([item, price]) => ({ item, price: Number(price) }));
+  }
+  return [];
+}
+
 async function loadMarket() {
   const tbody = $('#marketTable tbody');
   const note = $('#marketNote');
@@ -93,35 +112,31 @@ async function loadMarket() {
   note.textContent = 'loading…';
 
   try {
-    const filter = $('#marketFilter').value.trim();
-    const data = await api(`/api/market/prices${filter ? `?item=${encodeURIComponent(filter)}` : ''}`);
-    const rows = asArray(data);
+    const data = await api('/api/market/prices');
     console.log('market/prices raw payload:', data);
+    let rows = marketRowsFrom(data);
+
+    const filter = $('#marketFilter').value.trim().toLowerCase();
+    if (filter) rows = rows.filter((r) => r.item.toLowerCase().includes(filter));
+    rows.sort((a, b) => a.item.localeCompare(b.item));
 
     if (rows.length === 0) {
-      tbody.appendChild(emptyRow(4, 'No items returned. Check the console for the raw payload shape.'));
+      tbody.appendChild(emptyRow(2, 'No items returned. Check the console for the raw payload shape.'));
       note.textContent = '';
       return;
     }
 
-    for (const row of rows) {
-      const item = pick(row, ['itemCode', 'code', 'item', 'name']);
-      const sell = Number(pick(row, ['sellPrice', 'bestSell', 'lowestSell', 'sell'], null));
-      const buy = Number(pick(row, ['buyPrice', 'bestBuy', 'highestBuy', 'buy'], null));
-      const spread = Number.isFinite(sell) && Number.isFinite(buy) ? sell - buy : null;
-
+    for (const { item, price } of rows) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${item}</td>
-        <td class="num">${Number.isFinite(sell) ? fmtNum(sell) : '—'}</td>
-        <td class="num">${Number.isFinite(buy) ? fmtNum(buy) : '—'}</td>
-        <td class="num ${spread !== null && spread >= 0 ? 'up' : 'down'}">${spread !== null ? fmtNum(spread) : '—'}</td>
+        <td class="num">${Number.isFinite(price) ? fmtNum(price) : '—'}</td>
       `;
       tbody.appendChild(tr);
     }
     note.textContent = `${rows.length} item${rows.length === 1 ? '' : 's'} · cached ~30s`;
   } catch (err) {
-    tbody.appendChild(emptyRow(4, `Failed to load: ${err.message}`));
+    tbody.appendChild(emptyRow(2, `Failed to load: ${err.message}`));
     note.textContent = '';
   }
 }
