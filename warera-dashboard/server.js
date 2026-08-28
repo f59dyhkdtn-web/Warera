@@ -37,6 +37,15 @@ app.get('/api/market/orders', (req, res) => {
   );
 });
 
+// GET /api/market/transactions?item=CODE&limit=100
+// Historical trade log — used by the Craft ROI tab to compute real average
+// sale prices for equipment, since equipment has no live order-book price.
+app.get('/api/market/transactions', (req, res) => {
+  const input = { limit: req.query.limit ? Number(req.query.limit) : 100 };
+  if (req.query.item) input.itemCode = req.query.item;
+  handle(warera.query('transaction.getPaginatedTransactions', input, { cacheTtlMs: 60_000 }), res);
+});
+
 // ---- Rankings ---------------------------------------------------------------
 
 // GET /api/rankings?type=wealth&limit=50

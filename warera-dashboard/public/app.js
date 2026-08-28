@@ -236,6 +236,177 @@ async function loadBattles() {
   }
 }
 
+// ---- Craft ROI ------------------------------------------------------------
+
+// Scraps + Steel required per rarity, straight from the in-game "Craft
+// Items" menu (confirmed static, not something the API exposes directly —
+// there's no known crafting-cost endpoint, so this is hand-entered).
+const CRAFT_COST = {
+  common: { scraps: 6, steel: 1 },
+  uncommon: { scraps: 18, steel: 2 },
+  rare: { scraps: 54, steel: 4 },
+  epic: { scraps: 162, steel: 8 },
+  legendary: { scraps: 486, steel: 16 },
+  mythic: { scraps: 1458, steel: 32 },
+};
+
+// Odds a Case drops each rarity — as stated by WarEra's own game guide.
+const RARITY_ODDS = { common: 62, uncommon: 30, rare: 7.1, epic: 0.85, legendary: 0.04, mythic: 0.01 };
+
+// Odds a Case has drop each equipment slot: a stated 30% Weapon / 70%
+// "other slot" split. WarEra doesn't publish the breakdown *within* that
+// 70%, so this assumes the remaining five slots are equally likely —
+// flagged as an assumption, not a fact.
+const TYPE_ODDS = { Weapon: 30, Helmet: 14, Chest: 14, Gloves: 14, Pants: 14, Boots: 14 };
+
+function weightedPick(oddsMap) {
+  const entries = Object.entries(oddsMap);
+  const total = entries.reduce((sum, [, w]) => sum + w, 0);
+  let roll = Math.random() * total;
+  for (const [key, weight] of entries) {
+    if (roll < weight) return key;
+    roll -= weight;
+  }
+  return entries[entries.length - 1][0];
+}
+
+let materialPriceCache = null; // { scraps: n, steel: n, ... } — refreshed per render
+
+async function getMaterialPrices() {
+  const data = await api('/api/market/prices');
+  const rows = marketRowsFrom(data);
+  const map = {};
+  rows.forEach(({ item, price }) => { map[item] = price; });
+  return map;
+}
+
+/**
+ * Historical equipment sale prices, from the actual trade log
+ * (transaction.getPaginatedTransactions). This endpoint's exact response
+ * shape isn't independently documented — it's used elsewhere per a
+ * secondhand doc, but we don't have the field-level detail. So: fetch a
+ * batch of recent transactions, log the raw payload for verification, and
+ * try a handful of plausible field names per transaction. If a column
+ * looks empty/wrong, check the console log and adjust the `pick(...)`
+ * calls in this function.
+ */
+async function getEquipmentTransactions(rarity, type) {
+  const data = await api('/api/market/transactions?limit=200');
+  console.log('market/transactions raw payload:', data);
+  const rows = asArray(data);
+
+  const matches = rows
+    .map((tx) => ({
+      itemCode: pick(tx, ['itemCode', 'item', 'code'], ''),
+      slot: pick(tx, ['slot', 'equipmentType', 'itemType', 'type'], ''),
+      rarity: pick(tx, ['rarity', 'itemRarity', 'quality'], ''),
+      price: Number(pick(tx, ['price', 'amount', 'totalPrice', 'value'], null)),
+      timestamp: pick(tx, ['createdAt', 'timestamp', 'date', 'time'], null),
+    }))
+    .filter((tx) => Number.isFinite(tx.price))
+    .filter((tx) => {
+      const haystack = `${tx.itemCode} ${tx.slot}`.toLowerCase();
+      const rarityMatch = tx.rarity
+        ? tx.rarity.toString().toLowerCase() === rarity.toLowerCase()
+        : haystack.includes(rarity.toLowerCase());
+      const typeMatch = haystack.includes(type.toLowerCase());
+      return rarityMatch && typeMatch;
+    });
+
+  return { all: rows, matches };
+}
+
+function renderCraftCard(rarity, type, prices, txResult) {
+  const card = $('#craftCard');
+  const cost = CRAFT_COST[rarity];
+  const scrapsPrice = prices.scraps;
+  const steelPrice = prices.steel;
+  const haveMaterialPrices = Number.isFinite(scrapsPrice) && Number.isFinite(steelPrice);
+
+  const scrapsCost = haveMaterialPrices ? cost.scraps * scrapsPrice : null;
+  const steelCost = haveMaterialPrices ? cost.steel * steelPrice : null;
+  const craftTotal = haveMaterialPrices ? scrapsCost + steelCost : null;
+
+  const matches = txResult.matches;
+  const avgPrice = matches.length
+    ? matches.reduce((sum, tx) => sum + tx.price, 0) / matches.length
+    : null;
+  const recent = [...matches]
+    .sort((a, b) => (b.timestamp ?? 0) < (a.timestamp ?? 0) ? -1 : 1)
+    .slice(0, 5);
+
+  card.innerHTML = `
+    <div class="craft-card__head">
+      <span class="rarity-chip rarity-${rarity}">${rarity}</span>
+      <h3>${type}</h3>
+    </div>
+    <div class="craft-card__body">
+      <div class="craft-col">
+        <h4>Craft cost <span class="live-tag">live</span></h4>
+        <div class="craft-line"><span>${fmtNum(cost.scraps)} Scraps @ ${haveMaterialPrices ? fmtNum(scrapsPrice) : '—'}</span><span class="num">${scrapsCost !== null ? fmtNum(scrapsCost) : '—'}</span></div>
+        <div class="craft-line"><span>${fmtNum(cost.steel)} Steel @ ${haveMaterialPrices ? fmtNum(steelPrice) : '—'}</span><span class="num">${steelCost !== null ? fmtNum(steelCost) : '—'}</span></div>
+        <div class="craft-line craft-line--total"><span>Total to craft</span><span class="num">${craftTotal !== null ? fmtNum(craftTotal) : '—'}</span></div>
+      </div>
+      <div class="craft-col">
+        <h4>Market price <span class="live-tag">from ${matches.length} sale${matches.length === 1 ? '' : 's'}</span></h4>
+        ${
+          avgPrice !== null
+            ? `
+          <div class="craft-line craft-line--total"><span>Avg sale price</span><span class="num">${fmtNum(avgPrice)}</span></div>
+          ${recent
+            .map(
+              (tx) =>
+                `<div class="craft-line craft-line--sm"><span>${tx.timestamp ? new Date(tx.timestamp).toLocaleDateString() : 'recent sale'}</span><span class="num">${fmtNum(tx.price)}</span></div>`
+            )
+            .join('')}
+        `
+            : `<p class="empty-state" style="padding:10px 0;">No matching transactions found in the last ${txResult.all.length} trades. Check the console log — the item/rarity field names may need adjusting, or this combo just hasn't traded recently. Try widening with a bigger transaction sample or a different rarity.</p>`
+        }
+      </div>
+    </div>
+    <div class="craft-verdict" id="craftVerdict"></div>
+  `;
+
+  const verdict = $('#craftVerdict');
+  if (craftTotal === null || avgPrice === null) {
+    verdict.textContent = '';
+  } else {
+    const savings = avgPrice - craftTotal;
+    const pct = craftTotal > 0 ? (savings / craftTotal) * 100 : 0;
+    if (savings >= 0) {
+      verdict.innerHTML = `<span class="up">Craft it</span> — saves ${fmtNum(savings)} vs. the average sale price (${pct.toFixed(1)}% cheaper to craft)`;
+    } else {
+      verdict.innerHTML = `<span class="down">Buy it</span> — buying averages ${fmtNum(Math.abs(savings))} cheaper (${Math.abs(pct).toFixed(1)}% cheaper to buy)`;
+    }
+  }
+}
+
+async function loadCraftRoi() {
+  const rarity = $('#craftRarity').value;
+  const type = $('#craftType').value;
+  const card = $('#craftCard');
+  card.innerHTML = '<p class="empty-state">loading material prices &amp; transaction history…</p>';
+
+  try {
+    const [prices, txResult] = await Promise.all([
+      materialPriceCache ?? getMaterialPrices(),
+      getEquipmentTransactions(rarity, type),
+    ]);
+    materialPriceCache = prices;
+    renderCraftCard(rarity, type, prices, txResult);
+  } catch (err) {
+    card.innerHTML = `<p class="empty-state">Failed to load: ${err.message}</p>`;
+  }
+}
+
+function rollCraftItem() {
+  const rarity = weightedPick(RARITY_ODDS);
+  const type = weightedPick(TYPE_ODDS);
+  $('#craftRarity').value = rarity;
+  $('#craftType').value = type;
+  loadCraftRoi();
+}
+
 // ---- Wire up -------------------------------------------------------------
 
 function init() {
@@ -250,9 +421,14 @@ function init() {
   $('#battlesRefresh').addEventListener('click', loadBattles);
   $('#battlesActiveOnly').addEventListener('change', loadBattles);
 
+  $('#craftRoll').addEventListener('click', rollCraftItem);
+  $('#craftRarity').addEventListener('change', loadCraftRoi);
+  $('#craftType').addEventListener('change', loadCraftRoi);
+
   loadMarket();
   loadRankings();
   loadBattles();
+  loadCraftRoi();
   refreshTicker();
   setInterval(refreshTicker, 20_000);
 }

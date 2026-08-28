@@ -328,6 +328,135 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
   font-size: 13px;
 }
 
+/* ---------- Craft ROI ---------- */
+
+.craft-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 18px 20px 20px;
+}
+
+.craft-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.craft-card__head h3 {
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--ink);
+}
+
+.rarity-chip {
+  font-family: var(--display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+
+.rarity-common { color: #9ba18a; }
+.rarity-uncommon { color: #7fae5c; }
+.rarity-rare { color: #5c9bd6; }
+.rarity-epic { color: #b57edc; }
+.rarity-legendary { color: var(--brass); }
+.rarity-mythic { color: var(--red-glow); }
+
+.craft-card__body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.craft-col h4 {
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--red-glow);
+  border: 1px solid var(--red);
+  border-radius: 2px;
+  padding: 1px 6px;
+}
+
+.live-tag--ref {
+  color: var(--brass);
+  border-color: var(--brass-dim);
+}
+
+.craft-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  gap: 12px;
+}
+
+.craft-line--total {
+  border-bottom: none;
+  border-top: 1px solid var(--brass-dim);
+  margin-top: 4px;
+  padding-top: 10px;
+  font-weight: 600;
+  color: var(--brass);
+}
+
+.craft-line--sm {
+  font-size: 11px;
+  color: var(--ink-dim);
+  padding: 4px 0;
+}
+
+.craft-input {
+  width: 110px;
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 6px 8px;
+  text-align: right;
+}
+
+.craft-verdict {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+  font-family: var(--display);
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .craft-card__body { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 640px) {
   .masthead, .tabs, .panels { padding-left: 16px; padding-right: 16px; }
 }

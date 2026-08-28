@@ -107,6 +107,26 @@ a fraction of it.
   sometimes needing an API key). If you hit that, you'd add an `Authorization` or
   `X-API-Key` header in `lib/warera.js`'s `fetchWithRetry`.
 
+## Craft ROI tab
+
+Compares the cost to craft a piece of equipment against its actual recent sale prices.
+
+- **Craft cost is live and calculable**: scraps/steel required per rarity are fixed,
+  documented in-game values (hardcoded in `app.js`), multiplied by the *live* scraps
+  and steel prices your dashboard already pulls from `itemTrading.getPrices`.
+- **Market price is a real historical average**, pulled from `transaction.getPaginatedTransactions`
+  (the trade log) via `/api/market/transactions`. This endpoint's exact response shape
+  isn't independently confirmed — `getEquipmentTransactions()` in `app.js` logs the raw
+  payload to the browser console and tries several plausible field names
+  (`itemCode`/`item`/`code`, `slot`/`equipmentType`/`itemType`, `rarity`/`quality`,
+  `price`/`amount`/`value`). **If a card shows "No matching transactions found,"** open
+  the console, look at `market/transactions raw payload`, and adjust the field names in
+  `getEquipmentTransactions()` to match what's actually there.
+- "Roll Random Item" picks a rarity using WarEra's published Case drop odds, and an
+  equipment slot assuming the stated 30% Weapon / 70% other-slots split is even across
+  the other five slots — WarEra hasn't published that finer breakdown, so that part is
+  a documented assumption, not a confirmed fact.
+
 ## Disclaimer
 
 Unofficial, community-built, not affiliated with WarEra. Read-only — this never writes

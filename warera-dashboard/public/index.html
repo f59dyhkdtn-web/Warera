@@ -26,6 +26,7 @@
   <button class="tab is-active" data-tab="market">Market</button>
   <button class="tab" data-tab="rankings">Rankings</button>
   <button class="tab" data-tab="battles">Battles</button>
+  <button class="tab" data-tab="craft">Craft ROI</button>
 </nav>
 
 <main class="panels">
@@ -94,6 +95,40 @@
     </div>
     <div class="battle-grid" id="battleGrid"></div>
     <p class="panel__note" id="battlesNote"></p>
+  </section>
+
+  <!-- CRAFT ROI -->
+  <section class="panel" id="panel-craft">
+    <div class="panel__header">
+      <h2>Craft vs Buy</h2>
+      <div class="panel__controls">
+        <select id="craftRarity">
+          <option value="common">Common</option>
+          <option value="uncommon">Uncommon</option>
+          <option value="rare">Rare</option>
+          <option value="epic">Epic</option>
+          <option value="legendary">Legendary</option>
+          <option value="mythic">Mythic</option>
+        </select>
+        <select id="craftType">
+          <option value="Weapon">Weapon</option>
+          <option value="Helmet">Helmet</option>
+          <option value="Chest">Chest</option>
+          <option value="Gloves">Gloves</option>
+          <option value="Pants">Pants</option>
+          <option value="Boots">Boots</option>
+        </select>
+        <button id="craftRoll" class="btn">Roll Random Item</button>
+      </div>
+    </div>
+
+    <div class="craft-card" id="craftCard"></div>
+
+    <p class="panel__note" id="craftNote">
+      Craft cost uses live scraps/steel prices. Market price is the average
+      of actual recent sales for that item — pulled from WarEra's trade
+      history, not a live order-book quote (equipment doesn't have one).
+    </p>
   </section>
 
 </main>
