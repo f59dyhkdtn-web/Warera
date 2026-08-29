@@ -40,9 +40,11 @@ const BASE_URL = (RAW_BASE_URL.endsWith('/') ? RAW_BASE_URL : `${RAW_BASE_URL}/`
 // requirement lives on the primary API, not the proxy in front of it).
 const WARERA_API_KEY = process.env.WARERA_API_KEY || '';
 
-// WarEra community docs mention a 200 requests/minute limit on the
-// primary API; the gateway states the same. We stay comfortably under it.
-const RATE_LIMIT_PER_MINUTE = 150;
+// Your WarEra API token screen states 200 req/min per token — using 190
+// here (not the full 200) leaves a small safety margin while using nearly
+// all of the real budget, since the background ingest loop below is now
+// the dominant consumer of requests (everything else is cached 15-60s).
+const RATE_LIMIT_PER_MINUTE = 190;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 // Default cache TTLs per data category (milliseconds). Tune freely.

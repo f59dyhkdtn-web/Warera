@@ -124,10 +124,13 @@ async function ingestTick() {
   }
 }
 
-const INGEST_INTERVAL_MS = 700;
+// 190/min shared budget ÷ ~1 request per tick ≈ one tick every ~320ms.
+// Other tabs (market/rankings/battles) are cached 15-60s so they barely
+// touch this budget — ingestion can safely use nearly all of it.
+const INGEST_INTERVAL_MS = 320;
 setInterval(() => {
   // Back off when failing repeatedly (e.g. no WARERA_API_KEY set yet)
-  // instead of hammering the API/logs every 700ms.
+  // instead of hammering the API/logs every tick.
   if (ingestFailures > 3 && ingestFailures % 10 !== 0) return;
   ingestTick();
 }, INGEST_INTERVAL_MS);
