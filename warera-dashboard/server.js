@@ -102,13 +102,25 @@ app.get('/api/craft/history', async (req, res) => {
     // finishes, which would be worse than a smaller-but-reliable sample.
     // This trades sample size for reliability; raise it if it turns out
     // requests comfortably finish well under whatever timeout applies.
+    // Not passing transactionType here (even though the API appears to
+    // ignore it for filtering) — a hypothesis for the last bug was that
+    // sending a filter alongside a cursor makes the API invalidate/reset
+    // the cursor, which would explain pagination silently not advancing.
+    // Filtering happens entirely client-side against each record's own
+    // fields regardless, so there's no downside to dropping it here.
+    const pageLog = [];
     const transactions = await warera.queryPaginated(
       'transaction.getPaginatedTransactions',
-      { transactionType },
-      { pageSize: 100, maxPages: 80, maxRecords: 1000, oldestMs, getTimestamp }
+      {},
+      { pageSize: 100, maxPages: 80, maxRecords: 1000, oldestMs, getTimestamp, pageLog }
+    );
+    const itemMarketCount = transactions.filter((t) => t.transactionType === 'itemMarket').length;
+    console.log(
+      `craft history: ${transactions.length} records over ${pageLog.length} pages, ` +
+      `${itemMarketCount} itemMarket, cursor sample: ${pageLog.slice(0, 3).map((p) => p.cursorOut).join(' | ')}`
     );
     historyCache.set(cacheKey, { data: transactions, expiresAt: Date.now() + HISTORY_CACHE_TTL_MS });
-    res.json({ ok: true, data: transactions, cached: false });
+    res.json({ ok: true, data: transactions, cached: false, pageSummary: pageLog.slice(0, 10) });
   } catch (err) {
     console.error(err);
     const authIssue = /401/.test(err.message);

@@ -243,6 +243,8 @@ async function query(procedure, input, opts = {}) {
  * @param {number} [opts.oldestMs] stop once items are older than this (epoch ms)
  * @param {function} [opts.getTimestamp] (item) => epoch ms | null
  * @param {string} [opts.baseUrl] override the base URL for every page of this call
+ * @param {Array} [opts.pageLog] if provided, pushes { page, cursorIn, cursorOut,
+ *   itemCount } for every page fetched — for diagnosing pagination bugs
  */
 async function queryPaginated(procedure, baseInput, opts = {}) {
   const pageSize = opts.pageSize ?? 100;
@@ -269,6 +271,12 @@ async function queryPaginated(procedure, baseInput, opts = {}) {
       ? data.results
       : [];
 
+    const cursorBefore = cursor;
+    cursor = data?.nextCursor ?? data?.cursor ?? data?.meta?.nextCursor;
+    if (opts.pageLog) {
+      opts.pageLog.push({ page, cursorIn: cursorBefore, cursorOut: cursor, itemCount: items.length });
+    }
+
     if (items.length === 0) break;
     all.push(...items);
 
@@ -281,7 +289,6 @@ async function queryPaginated(procedure, baseInput, opts = {}) {
       if (Number.isFinite(oldestOnPage) && oldestOnPage < opts.oldestMs) break;
     }
 
-    cursor = data?.nextCursor ?? data?.cursor ?? data?.meta?.nextCursor;
     if (cursor === undefined || cursor === null) break;
   }
 
