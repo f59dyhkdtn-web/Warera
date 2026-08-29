@@ -156,11 +156,9 @@ app.get('/api/craft/history', async (req, res) => {
 // procedure are documented anywhere found, not the response shape.
 app.get('/api/craft/debug', async (req, res) => {
   try {
-    const data = await warera.query(
-      'transaction.getPaginatedTransactions',
-      { transactionType: req.query.transactionType || 'itemMarket', limit: 5 },
-      { skipCache: true }
-    );
+    const input = { transactionType: req.query.transactionType || 'itemMarket', limit: 5 };
+    if (req.query.itemCode) input.itemCode = req.query.itemCode;
+    const data = await warera.query('transaction.getPaginatedTransactions', input, { skipCache: true });
     res.json({ ok: true, data });
   } catch (err) {
     console.error(err);
