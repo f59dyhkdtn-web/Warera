@@ -85,10 +85,27 @@ app.get('/api/craft/history', async (req, res) => {
     // Tokens" account settings screen) sent as X-API-Key on the PRIMARY
     // API. Without one configured, this reliably 401s — that's expected,
     // not a bug, until a token is set.
+    //
+    // NOTE ON PAGE SIZE: a live check (/api/craft/debug) showed the API
+    // ignores the "limit" input and returns roughly 10 records per page
+    // regardless, and the log mixes EVERY transaction type together (wage,
+    // openCase, dismantleItem, itemMarket, etc.) — the "transactionType"
+    // input filter is ignored too. So maxPages needs to be much higher
+    // than it would if paging returned ~100 filtered records at a time;
+    // filtering down to real itemMarket equipment sales happens client-side
+    // in app.js against each record's own transactionType field instead.
+    //
+    // maxPages is deliberately capped well short of what would cover a
+    // full 24h of "thousands per day" activity — at ~10 records/page and
+    // our own 150/min self-throttle, a much higher cap risks the request
+    // itself timing out (Render's proxy or the browser) before it
+    // finishes, which would be worse than a smaller-but-reliable sample.
+    // This trades sample size for reliability; raise it if it turns out
+    // requests comfortably finish well under whatever timeout applies.
     const transactions = await warera.queryPaginated(
       'transaction.getPaginatedTransactions',
       { transactionType },
-      { pageSize: 100, maxPages: 20, maxRecords: 2000, oldestMs, getTimestamp }
+      { pageSize: 100, maxPages: 80, maxRecords: 1000, oldestMs, getTimestamp }
     );
     historyCache.set(cacheKey, { data: transactions, expiresAt: Date.now() + HISTORY_CACHE_TTL_MS });
     res.json({ ok: true, data: transactions, cached: false });

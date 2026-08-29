@@ -127,18 +127,29 @@ A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
   shows a clear message rather than data, while the rest of the dashboard keeps
   working normally. The time-window buttons re-filter the already-fetched batch
   client-side — no extra API calls per click.
-- **Rarity/slot come from parsing `itemCode`, confirmed from live data**: equipment
-  codes look like `helmet4` — a slot name plus a digit 1–6 matching common→mythic
-  order (4 = epic). Price comes from the `money` field (divided by `quantity`, since
-  some rows are multi-unit). **Weapon sale codes (e.g. `sniper`) don't carry that
-  digit**, so weapon rarity can't be determined from the sale data alone — the
-  breakdown table pools all weapon sales together regardless of rarity and marks that
-  row "indicative" rather than guessing, matching how community trackers handle the
-  same gap. Stat-roll values are still unconfirmed — `parseTransaction()` in `app.js`
-  tries several plausible field names for that one; **the stat-roll grid is the part
-  most likely to still come up empty** — if it does, that section says so explicitly,
-  and the console log (`craft history raw payload`) is where to find the real field
-  name to add.
+- **Rarity/slot/stat-roll are confirmed from live data** (via `/api/craft/debug`,
+  included in this project for future debugging): equipment sales have a nested
+  `item: { type: "equipment", code: "helmet4", skills: {...} }` — `helmet4`'s digit
+  (1–6) matches common→mythic order, and `skills` holds the actual stat roll (e.g.
+  `{dodge: 25}` for boots, `{armor: 2}` for pants) — bucketed by whatever value comes
+  first in that object, regardless of its name, since it varies by slot. Price is
+  `money` divided by `quantity`. **Weapon sale codes (e.g. `knife`) don't carry a
+  rarity digit** — confirmed, not guessed — so weapon rarity genuinely isn't
+  recoverable from the sale record, and the breakdown table pools all weapon sales
+  together with an "indicative" tag rather than guessing, same as community trackers.
+- **Filtering happens client-side, not via the API's own filters.** A live check
+  showed the `transactionType` and `limit` *request* parameters are silently ignored
+  — the log actually returned mixes wages, case openings, dismantles, and market
+  sales together, at roughly 10 records per page regardless of what's requested.
+  `parseTransaction()` in `app.js` filters each record against its own
+  `transactionType`/`item.type` fields instead of trusting the request filter.
+- **Sample size is capped for reliability, not completeness.** At ~10 raw records per
+  page (mostly not equipment sales) and this app's 150 req/min self-throttle, pulling
+  a truly comprehensive 24h sample ("thousands per day" of activity) would take long
+  enough that Render's proxy or the browser could time out the request before it
+  finishes. `/api/craft/history` stops at 80 pages / 1000 raw records as a tradeoff —
+  raise `maxPages`/`maxRecords` in `server.js` if requests are comfortably finishing
+  well under whatever timeout applies and you want a bigger sample.
 - Sample-size confidence badges (high/medium/low) use thresholds I picked (100 / 20
   sales) — not a WarEra-published figure, just a reasonable line so a 2-sale average
   isn't shown with the same weight as a 500-sale one.
