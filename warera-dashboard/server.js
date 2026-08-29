@@ -80,16 +80,30 @@ app.get('/api/craft/history', async (req, res) => {
       const t = raw ? new Date(raw).getTime() : NaN;
       return Number.isFinite(t) ? t : null;
     };
+    // Transaction history 401s on the primary API (needs a logged-in
+    // session) — routed at the gateway specifically, isolated from every
+    // other call in this app. A live test showed the gateway can ALSO
+    // 401 here despite documenting itself as keyless, so this may simply
+    // fail; the catch below turns that into a clear message rather than
+    // a generic error.
     const transactions = await warera.queryPaginated(
       'transaction.getPaginatedTransactions',
       { transactionType },
-      { pageSize: 100, maxPages: 20, maxRecords: 2000, oldestMs, getTimestamp }
+      { pageSize: 100, maxPages: 20, maxRecords: 2000, oldestMs, getTimestamp, baseUrl: warera.GATEWAY_BASE_URL }
     );
     historyCache.set(cacheKey, { data: transactions, expiresAt: Date.now() + HISTORY_CACHE_TTL_MS });
     res.json({ ok: true, data: transactions, cached: false });
   } catch (err) {
     console.error(err);
-    res.status(502).json({ ok: false, error: err.message });
+    const authIssue = /401/.test(err.message);
+    res.status(502).json({
+      ok: false,
+      error: authIssue
+        ? 'Transaction history requires access this app doesn\'t have (401 from the gateway). ' +
+          'Neither the primary WarEra API nor the community gateway will serve this without a ' +
+          'login session or API key we don\'t have — the rest of the dashboard is unaffected.'
+        : err.message,
+    });
   }
 });
 

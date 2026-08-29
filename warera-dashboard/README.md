@@ -5,32 +5,31 @@ player/country rankings, and active battles.
 
 ## What this is (and isn't)
 
-WarEra has **no official public API**. This app talks to
-[**gateway.warerastats.io**](https://gateway.warerastats.io/) — a free, keyless,
-community-run proxy that's officially documented (endpoint names and input
-parameters are confirmed straight from that page) and mirrors the real WarEra API
-1:1. It also has its own scraped database for a few things the primary API won't
-serve without a logged-in session — transaction history being the one this app
-needs, for the Craft ROI tab.
+WarEra has **no official public API**. This app talks to `api2.warera.io` (the same
+backend the game's own web client uses) for everything by default. One exception:
+transaction history (used by the Craft ROI tab) 401s there — it needs a logged-in
+session, not just a public request — so that one call is routed instead to
+[**gateway.warerastats.io**](https://gateway.warerastats.io/), a community-run proxy
+that scrapes and stores its own copy of transaction data.
 
-Two things are still not guaranteed, worth knowing:
+Worth knowing:
 
-1. **Response shapes aren't documented anywhere found so far** — only the request
-   parameters are. Every route logs its raw payload to the browser console for
-   exactly this reason; if a column looks empty or wrong, check the console.
-2. It's still a third party, not WarEra itself — it could change or go away.
-   `WARERA_API_BASE_URL` env var lets you point back at `https://api2.warera.io/trpc/`
-   directly if needed (transaction history won't work there — see Craft ROI section).
+1. **The gateway's own docs say it's free and keyless**, but a live test showed it
+   also returning 401 on calls that work fine against the primary API — a real
+   contradiction I couldn't resolve without testing it live myself. So it's isolated
+   to just the one call that needs it (rather than trusted as a global default), and
+   if it doesn't work, Craft ROI's sale-price data will show a clear error while the
+   rest of the dashboard keeps working normally.
+2. **Response shapes aren't documented anywhere found so far** — only request
+   parameters are (via the gateway's own page). Every route logs its raw payload to
+   the browser console for exactly this reason; check there if a column looks wrong.
+3. `WARERA_API_BASE_URL` env var overrides the base URL for *everything* if you want
+   to point it elsewhere; `WARERA_GATEWAY_API_KEY` sets an `X-API-Key` header for
+   gateway calls specifically, in case that turns out to be what it actually needs.
 
 Respect the game's rate limits — the client here caps itself at 150 req/min (WarEra's
 community docs mention a 200/min ceiling) and caches responses for 15–60 seconds
 depending on how often that data changes.
-
-There's also a community-run caching gateway at `gateway.warerastats.io/trpc/` that
-batches/dedupes requests server-side and requires its own `X-API-Key` header. You can
-point this app at it instead of the primary API — see Configuration below. It's a
-convenience option, not something this app needs; the primary API works fine on its
-own for a dashboard this size.
 
 **A note on other third-party WarEra tools you might come across:** anything that
 proxies your requests server-side (a "live API tester" website, for instance) sees
@@ -55,11 +54,15 @@ Environment variables, all optional:
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3000` | Port the dashboard server listens on |
-| `WARERA_API_BASE_URL` | `https://api2.warera.io/trpc/` | Set to `https://gateway.warerastats.io/trpc/` to use the community gateway instead |
-| `WARERA_GATEWAY_API_KEY` | (none) | Required if you set the base URL to the gateway |
+| `WARERA_API_BASE_URL` | `https://api2.warera.io/trpc/` | Overrides the base URL for EVERY call (not just transaction history) |
+| `WARERA_GATEWAY_API_KEY` | (none) | Sends `X-API-Key` on gateway calls — try this if Craft ROI's sale data still 401s |
+
+Transaction history (Craft ROI's sale prices) always goes through the gateway
+specifically, regardless of `WARERA_API_BASE_URL` — see the Craft ROI section below
+for why, and what happens if the gateway rejects it too.
 
 ```bash
-WARERA_API_BASE_URL=https://gateway.warerastats.io/trpc/ WARERA_GATEWAY_API_KEY=your_key npm start
+WARERA_GATEWAY_API_KEY=your_key npm start
 ```
 
 ## Project layout
@@ -120,8 +123,11 @@ A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
 - **Sale data**: pulled once per ~3 minutes from `/api/craft/history`, which pages
   through `transaction.getPaginatedTransactions` (filtered to `transactionType:
   itemMarket`) accumulating up to 2000 records or 24 hours of trades, whichever comes
-  first. The time-window buttons just re-filter that already-fetched batch client-side
-  — no extra API calls per click.
+  first. This call is routed to the gateway specifically (the primary API 401s on it),
+  isolated from every other call in the app — if the gateway also rejects it, you'll
+  see a clear message in the Craft ROI tab explaining that, while the rest of the
+  dashboard (Market/Rankings/Battles) keeps working normally. The time-window buttons
+  re-filter the already-fetched batch client-side — no extra API calls per click.
 - **Rarity/slot inference and stat-roll values are NOT confirmed against a real schema.**
   Only the *request* parameters for `transaction.getPaginatedTransactions` are
   documented (by the gateway); the *response* shape isn't. `parseTransaction()` in

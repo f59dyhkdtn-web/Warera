@@ -1,42 +1,40 @@
 'use strict';
 
 /**
- * Thin client for WarEra's tRPC API, routed through the community gateway
- * at gateway.warerastats.io by default (see below for why).
+ * Thin client for WarEra's tRPC API.
  *
  * IMPORTANT / READ ME:
- * There is no official WarEra-run public API. This uses:
- *  - Endpoint names & input parameters: officially documented by the
- *    gateway itself at https://gateway.warerastats.io/ (fetched directly,
- *    not secondhand — this is the most reliable source we have).
- *  - Response *output* shapes: NOT documented anywhere found so far. Each
- *    route in server.js / consumer in app.js logs the raw payload to the
- *    console and extracts fields defensively — if a field looks wrong,
- *    check the console log.
+ * There is no official WarEra-run public API. Input parameters are
+ * documented by the community gateway at https://gateway.warerastats.io/
+ * (fetched directly — the most reliable source found). Response *output*
+ * shapes are NOT documented anywhere found so far — each consumer of
+ * this client logs raw payloads and extracts fields defensively.
  *
- * WHY THE GATEWAY AND NOT api2.warera.io DIRECTLY:
- * A couple of endpoints (transaction.getPaginatedTransactions, for one)
- * return 401 from the primary API — they need a logged-in session, not
- * just a public request. The gateway continuously scrapes and stores that
- * data itself, so it can serve it back without needing your session. It
- * also documents itself as free, keyless, drop-in-compatible with the
- * primary API. Everything else this app uses is supported there too.
- * Override with WARERA_API_BASE_URL if you ever want to point back at
- * api2.warera.io directly (auth-requiring calls just won't work there).
+ * TWO BASE URLS, USED SELECTIVELY (not one global switch):
+ *  - PRIMARY_BASE_URL (api2.warera.io) is the default for everything —
+ *    it's what's been reliably working for market/rankings/battles.
+ *  - GATEWAY_BASE_URL (gateway.warerastats.io) is used ONLY for calls that
+ *    explicitly opt in via `opts.baseUrl`, currently just transaction
+ *    history. That endpoint 401s on the primary API (needs a logged-in
+ *    session) — the gateway scrapes it independently so it doesn't need
+ *    one, in theory. In practice, a live test showed the gateway ALSO
+ *    401-ing on requests that used to work fine on the primary API
+ *    (battle.getBattles), contradicting its own "free, keyless" docs. So:
+ *    kept isolated here rather than trusted as a global default, and
+ *    calls using it are expected to possibly fail — callers should handle
+ *    that gracefully rather than assume it works.
  */
 
-// Defaults to the community gateway (gateway.warerastats.io) rather than
-// api2.warera.io directly — see the note above for why. No API key needed
-// per the gateway's own docs (WARERA_GATEWAY_API_KEY below is unused
-// unless that changes; kept as an escape hatch). Must end with a trailing
-// slash; normalized below if not. Override with WARERA_API_BASE_URL to
-// point elsewhere, e.g. back at the primary API.
-const RAW_BASE_URL = process.env.WARERA_API_BASE_URL || 'https://gateway.warerastats.io/trpc/';
+const PRIMARY_BASE_URL = 'https://api2.warera.io/trpc';
+const GATEWAY_BASE_URL = 'https://gateway.warerastats.io/trpc';
+
+// Override for ALL calls, if needed. Defaults to the primary API.
+const RAW_BASE_URL = process.env.WARERA_API_BASE_URL || PRIMARY_BASE_URL;
 const BASE_URL = (RAW_BASE_URL.endsWith('/') ? RAW_BASE_URL : `${RAW_BASE_URL}/`).replace(/\/$/, '');
 const GATEWAY_API_KEY = process.env.WARERA_GATEWAY_API_KEY || '';
 
-// The gateway states its own rate limit as 200/min with request dedup and
-// 400ms batching built in; we still self-limit as a courtesy.
+// WarEra community docs mention a 200 requests/minute limit on the
+// primary API; the gateway states the same. We stay comfortably under it.
 const RATE_LIMIT_PER_MINUTE = 150;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
@@ -105,23 +103,23 @@ function takeToken() {
  * Builds candidate URLs for a tRPC query, most-likely-correct first.
  * We try each in order until one returns a parseable 2xx response.
  */
-function buildUrls(procedure, input) {
+function buildUrls(procedure, input, baseUrl) {
   const urls = [];
 
   if (input === undefined) {
     // No-input query — the simple case, same across tRPC conventions.
-    urls.push(`${BASE_URL}/${procedure}`);
+    urls.push(`${baseUrl}/${procedure}`);
     return urls;
   }
 
   // Shape A: batch=1 with superjson-style wrapping (common for Next.js
   // apps using httpBatchLink + superjson transformer).
   const batchInput = encodeURIComponent(JSON.stringify({ 0: { json: input } }));
-  urls.push(`${BASE_URL}/${procedure}?batch=1&input=${batchInput}`);
+  urls.push(`${baseUrl}/${procedure}?batch=1&input=${batchInput}`);
 
   // Shape B: plain (non-batched) input, no transformer wrapping.
   const plainInput = encodeURIComponent(JSON.stringify(input));
-  urls.push(`${BASE_URL}/${procedure}?input=${plainInput}`);
+  urls.push(`${baseUrl}/${procedure}?input=${plainInput}`);
 
   return urls;
 }
@@ -158,8 +156,10 @@ async function fetchWithRetry(url, attempt = 0) {
     Origin: 'https://app.warera.io',
     Accept: 'application/json',
   };
-  // Required when BASE_URL points at gateway.warerastats.io — omitted
-  // entirely against the primary API since it doesn't need it.
+  // Only attached when a caller explicitly requests the gateway AND a key
+  // is configured — the primary API doesn't want this header, and per a
+  // live test, sending it unconditionally didn't help against the gateway
+  // either, so it's opt-in rather than automatic.
   if (GATEWAY_API_KEY) headers['X-API-Key'] = GATEWAY_API_KEY;
 
   const res = await fetch(url, { headers });
@@ -182,15 +182,17 @@ async function fetchWithRetry(url, attempt = 0) {
  * @param {string} [opts.cacheCategory] key into CACHE_TTL_MS
  * @param {number} [opts.cacheTtlMs] overrides the category TTL
  * @param {boolean} [opts.skipCache]
+ * @param {string} [opts.baseUrl] override the base URL for just this call
+ *   (e.g. GATEWAY_BASE_URL) instead of the module-wide default
  */
 async function query(procedure, input, opts = {}) {
-  const cacheKey = `${procedure}:${JSON.stringify(input ?? null)}`;
+  const cacheKey = `${procedure}:${JSON.stringify(input ?? null)}:${opts.baseUrl ?? ''}`;
   if (!opts.skipCache) {
     const cached = cacheGet(cacheKey);
     if (cached !== undefined) return cached;
   }
 
-  const urls = buildUrls(procedure, input);
+  const urls = buildUrls(procedure, input, opts.baseUrl ?? BASE_URL);
   let lastError;
 
   for (const url of urls) {
@@ -234,6 +236,7 @@ async function query(procedure, input, opts = {}) {
  * @param {number} [opts.maxRecords=2000]
  * @param {number} [opts.oldestMs] stop once items are older than this (epoch ms)
  * @param {function} [opts.getTimestamp] (item) => epoch ms | null
+ * @param {string} [opts.baseUrl] override the base URL for every page of this call
  */
 async function queryPaginated(procedure, baseInput, opts = {}) {
   const pageSize = opts.pageSize ?? 100;
@@ -248,7 +251,7 @@ async function queryPaginated(procedure, baseInput, opts = {}) {
     const input = { ...baseInput, limit: pageSize };
     if (cursor !== undefined) input.cursor = cursor;
 
-    const data = await query(procedure, input, { skipCache: true });
+    const data = await query(procedure, input, { skipCache: true, baseUrl: opts.baseUrl });
 
     const items = Array.isArray(data)
       ? data
@@ -279,4 +282,4 @@ async function queryPaginated(procedure, baseInput, opts = {}) {
   return all;
 }
 
-module.exports = { query, queryPaginated, CACHE_TTL_MS };
+module.exports = { query, queryPaginated, PRIMARY_BASE_URL, GATEWAY_BASE_URL, CACHE_TTL_MS };
