@@ -106,6 +106,26 @@ app.get('/api/craft/history', async (req, res) => {
   }
 });
 
+// GET /api/craft/debug
+// Temporary diagnostic: returns ONE raw, unflattened page of
+// transaction.getPaginatedTransactions exactly as the API sends it —
+// used to find the real pagination field names (what the "next cursor"
+// is actually called), since only the request parameters for this
+// procedure are documented anywhere found, not the response shape.
+app.get('/api/craft/debug', async (req, res) => {
+  try {
+    const data = await warera.query(
+      'transaction.getPaginatedTransactions',
+      { transactionType: req.query.transactionType || 'itemMarket', limit: 5 },
+      { skipCache: true }
+    );
+    res.json({ ok: true, data });
+  } catch (err) {
+    console.error(err);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 // ---- Rankings ---------------------------------------------------------------
 
 // GET /api/rankings?type=userWealth&limit=50

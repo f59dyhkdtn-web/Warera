@@ -279,33 +279,60 @@ async function getMaterialPrices() {
   return map;
 }
 
+// Raw materials/goods trade through the same itemMarket transaction log as
+// equipment does — filtered out here so they don't get misread as gear.
+// (Full list confirmed from itemTrading.getPrices' own response keys.)
+const RAW_MATERIAL_CODES = new Set([
+  'ammo', 'bread', 'casel1', 'casel2', 'coca', 'cocain', 'concrete', 'cookedFish',
+  'fish', 'grain', 'heavyAmmo', 'iron', 'lead', 'lightAmmo', 'limestone',
+  'livestock', 'oil', 'paper', 'petroleum', 'scraps', 'steak', 'steel', 'wood',
+]);
+
+// Confirmed from a live console sample (see console.log below): equipment
+// itemCode is like "helmet4" — a slot name plus a digit 1-6 that matches
+// this array's 1-based position (helmet4 → RARITIES[4-1] → "epic").
+// Weapon sale codes (e.g. "sniper") don't carry that digit — WarEra's own
+// community trackers flag weapon-rarity matching as "indicative" for the
+// same reason, so this app leaves weapon-sale rarity unknown (null) rather
+// than guess. That means Weapon rows in the breakdown stay empty — a real
+// gap, not a bug — see the README.
+const ARMOR_CODE_PATTERN = /^(helmet|chest|boots|gloves|pants)(\d)$/i;
+const ARMOR_CODE_TO_SLOT = { helmet: 'Helmet', chest: 'Chest', boots: 'Boots', gloves: 'Gloves', pants: 'Pants' };
+
 /**
  * Turns one raw transaction record into a normalized shape. Field names
- * aren't independently confirmed for this endpoint's *output* (only its
- * input parameters are documented) — this tries several plausible names
- * per field. If rarity/slot/statValue come back empty across the board,
- * check `console.log('craft history raw sample', ...)` for the real names
- * and adjust the `pick(...)` lists below.
+ * confirmed from a live console sample: price is `money` (divided by
+ * `quantity` when present, since fungible-good rows can be multi-unit),
+ * and rarity is embedded in equipment `itemCode`s rather than a separate
+ * field — see ARMOR_CODE_PATTERN above.
  */
 function parseTransaction(tx) {
   const itemCode = pick(tx, ['itemCode', 'item', 'code'], '');
-  const rarityRaw = pick(tx, ['rarity', 'itemRarity', 'quality'], '');
-  const slotRaw = pick(tx, ['slot', 'equipmentType', 'itemType', 'type'], '');
-  const price = Number(pick(tx, ['price', 'amount', 'totalPrice', 'value'], null));
+  const money = Number(pick(tx, ['money', 'price', 'amount', 'totalPrice', 'value'], null));
+  const quantity = Number(pick(tx, ['quantity', 'qty'], 1)) || 1;
+  const price = Number.isFinite(money) ? money / quantity : null;
   const statValue = Number(
     pick(tx, ['statValue', 'armor', 'rollValue', 'stat', 'primaryStat', 'itemStat'], null)
   );
   const tsRaw = pick(tx, ['createdAt', 'timestamp', 'date', 'time'], null);
   const timestampMs = tsRaw ? new Date(tsRaw).getTime() : null;
 
-  const haystack = `${itemCode} ${slotRaw}`.toLowerCase();
-  const rarity = RARITIES.find((r) => rarityRaw.toString().toLowerCase() === r || haystack.includes(r));
-  const slot = SLOTS.find((s) => slotRaw.toString().toLowerCase() === s.toLowerCase() || haystack.includes(s.toLowerCase()));
+  let rarity = null;
+  let slot = null;
+  const armorMatch = itemCode.match(ARMOR_CODE_PATTERN);
+  if (armorMatch) {
+    slot = ARMOR_CODE_TO_SLOT[armorMatch[1].toLowerCase()];
+    rarity = RARITIES[Number(armorMatch[2]) - 1] ?? null;
+  } else if (!RAW_MATERIAL_CODES.has(itemCode)) {
+    // Not armor, not a known raw material — treat as a weapon sale.
+    // Rarity genuinely unknown from the code alone (see note above).
+    slot = 'Weapon';
+  }
 
   return {
     itemCode,
-    rarity: rarity || null,
-    slot: slot || null,
+    rarity,
+    slot,
     price: Number.isFinite(price) ? price : null,
     statValue: Number.isFinite(statValue) ? statValue : null,
     timestampMs: Number.isFinite(timestampMs) ? timestampMs : null,
@@ -409,9 +436,15 @@ function renderBreakdown(transactions, prices) {
   const craftTotal = craftCostFor(selectedRarity, prices);
 
   const rows = SLOTS.map((slot) => {
-    const s = statsFor(transactions, selectedRarity, slot, craftTotal);
+    // Weapon sales carry no reliable rarity signal in their itemCode (see
+    // parseTransaction) — pooling ALL weapon sales here rather than
+    // filtering by selectedRarity, and flagging it, beats silently
+    // showing zero when data actually exists.
+    const s = slot === 'Weapon'
+      ? statsFor(transactions, null, slot, craftTotal)
+      : statsFor(transactions, selectedRarity, slot, craftTotal);
     const odds = TYPE_ODDS[slot];
-    return { slot, odds, ...s };
+    return { slot, odds, ...s, indicative: slot === 'Weapon' };
   });
 
   el.innerHTML = `
@@ -428,7 +461,7 @@ function renderBreakdown(transactions, prices) {
             .map(
               (r) => `
             <tr>
-              <td>${r.slot}</td>
+              <td>${r.slot}${r.indicative ? ' <span class="indicative-tag" title="Rarity can\'t be read from weapon sale codes — pooled across all rarities, compared against this rarity\'s craft cost">indicative</span>' : ''}</td>
               <td class="num">${r.odds}%</td>
               <td class="num">${r.avgPrice !== null ? fmtNum(r.avgPrice) : '—'}</td>
               <td class="num ${r.marginAbs === null ? '' : r.marginAbs >= 0 ? 'up' : 'down'}">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)}` : '—'}</td>
@@ -441,6 +474,7 @@ function renderBreakdown(transactions, prices) {
         </tbody>
       </table>
     </div>
+    ${rows.some((r) => r.indicative) ? '<p class="breakdown-footnote">Weapon rarity can\'t be determined from the sale data, so Weapon figures pool sales across all rarities and compare them against the selected rarity\'s craft cost — treat as a rough estimate, not a precise one.</p>' : ''}
   `;
 }
 

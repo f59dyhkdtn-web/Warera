@@ -127,14 +127,18 @@ A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
   shows a clear message rather than data, while the rest of the dashboard keeps
   working normally. The time-window buttons re-filter the already-fetched batch
   client-side — no extra API calls per click.
-- **Rarity/slot inference and stat-roll values are NOT confirmed against a real schema.**
-  Only the *request* parameters for `transaction.getPaginatedTransactions` are
-  documented (by the gateway); the *response* shape isn't. `parseTransaction()` in
-  `app.js` tries several plausible field names for rarity, slot, price, and stat value,
-  and logs a sample of the raw payload to the console. **The stat-roll grid is the part
-  most likely to come up empty** — if it does, that section says so explicitly rather
-  than showing fake numbers, and the console log is where to find the real field name
-  to add.
+- **Rarity/slot come from parsing `itemCode`, confirmed from live data**: equipment
+  codes look like `helmet4` — a slot name plus a digit 1–6 matching common→mythic
+  order (4 = epic). Price comes from the `money` field (divided by `quantity`, since
+  some rows are multi-unit). **Weapon sale codes (e.g. `sniper`) don't carry that
+  digit**, so weapon rarity can't be determined from the sale data alone — the
+  breakdown table pools all weapon sales together regardless of rarity and marks that
+  row "indicative" rather than guessing, matching how community trackers handle the
+  same gap. Stat-roll values are still unconfirmed — `parseTransaction()` in `app.js`
+  tries several plausible field names for that one; **the stat-roll grid is the part
+  most likely to still come up empty** — if it does, that section says so explicitly,
+  and the console log (`craft history raw payload`) is where to find the real field
+  name to add.
 - Sample-size confidence badges (high/medium/low) use thresholds I picked (100 / 20
   sales) — not a WarEra-published figure, just a reasonable line so a 2-sale average
   isn't shown with the same weight as a 500-sale one.

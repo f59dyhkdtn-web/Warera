@@ -589,6 +589,26 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
   margin: 0 0 10px;
 }
 
+.indicative-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--brass);
+  border: 1px solid var(--brass-dim);
+  border-radius: 2px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  cursor: help;
+}
+
+.breakdown-footnote {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--ink-dim);
+  font-style: italic;
+}
+
 .statroll-section {
   margin-top: 22px;
 }
