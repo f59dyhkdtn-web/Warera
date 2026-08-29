@@ -80,16 +80,15 @@ app.get('/api/craft/history', async (req, res) => {
       const t = raw ? new Date(raw).getTime() : NaN;
       return Number.isFinite(t) ? t : null;
     };
-    // Transaction history 401s on the primary API (needs a logged-in
-    // session) — routed at the gateway specifically, isolated from every
-    // other call in this app. A live test showed the gateway can ALSO
-    // 401 here despite documenting itself as keyless, so this may simply
-    // fail; the catch below turns that into a clear message rather than
-    // a generic error.
+    // Transaction history needs an authenticated request — a WARERA_API_KEY
+    // env var (an official per-account token from WarEra's own "API
+    // Tokens" account settings screen) sent as X-API-Key on the PRIMARY
+    // API. Without one configured, this reliably 401s — that's expected,
+    // not a bug, until a token is set.
     const transactions = await warera.queryPaginated(
       'transaction.getPaginatedTransactions',
       { transactionType },
-      { pageSize: 100, maxPages: 20, maxRecords: 2000, oldestMs, getTimestamp, baseUrl: warera.GATEWAY_BASE_URL }
+      { pageSize: 100, maxPages: 20, maxRecords: 2000, oldestMs, getTimestamp }
     );
     historyCache.set(cacheKey, { data: transactions, expiresAt: Date.now() + HISTORY_CACHE_TTL_MS });
     res.json({ ok: true, data: transactions, cached: false });
@@ -99,9 +98,9 @@ app.get('/api/craft/history', async (req, res) => {
     res.status(502).json({
       ok: false,
       error: authIssue
-        ? 'Transaction history requires access this app doesn\'t have (401 from the gateway). ' +
-          'Neither the primary WarEra API nor the community gateway will serve this without a ' +
-          'login session or API key we don\'t have — the rest of the dashboard is unaffected.'
+        ? 'Transaction history needs an authenticated request. Set a WARERA_API_KEY ' +
+          'environment variable to a token generated from your WarEra account\'s API ' +
+          'Tokens screen — the rest of the dashboard works fine without it.'
         : err.message,
     });
   }

@@ -31,7 +31,14 @@ const GATEWAY_BASE_URL = 'https://gateway.warerastats.io/trpc';
 // Override for ALL calls, if needed. Defaults to the primary API.
 const RAW_BASE_URL = process.env.WARERA_API_BASE_URL || PRIMARY_BASE_URL;
 const BASE_URL = (RAW_BASE_URL.endsWith('/') ? RAW_BASE_URL : `${RAW_BASE_URL}/`).replace(/\/$/, '');
-const GATEWAY_API_KEY = process.env.WARERA_GATEWAY_API_KEY || '';
+
+// A real, official per-account token from WarEra's own "API Tokens"
+// screen (in-game account settings) — 200 req/min of its own, sent as
+// X-API-Key on the PRIMARY api2.warera.io API. This is what unlocks
+// session-gated endpoints like transaction history; it is NOT a gateway
+// key (gateway.warerastats.io is keyless per its own docs — the auth
+// requirement lives on the primary API, not the proxy in front of it).
+const WARERA_API_KEY = process.env.WARERA_API_KEY || '';
 
 // WarEra community docs mention a 200 requests/minute limit on the
 // primary API; the gateway states the same. We stay comfortably under it.
@@ -156,11 +163,10 @@ async function fetchWithRetry(url, attempt = 0) {
     Origin: 'https://app.warera.io',
     Accept: 'application/json',
   };
-  // Only attached when a caller explicitly requests the gateway AND a key
-  // is configured — the primary API doesn't want this header, and per a
-  // live test, sending it unconditionally didn't help against the gateway
-  // either, so it's opt-in rather than automatic.
-  if (GATEWAY_API_KEY) headers['X-API-Key'] = GATEWAY_API_KEY;
+  // Only attached when a token is configured. Sent to whichever base URL
+  // this call is using — it's a per-account WarEra credential, meaningful
+  // to the primary API specifically (see WARERA_API_KEY above).
+  if (WARERA_API_KEY) headers['X-API-Key'] = WARERA_API_KEY;
 
   const res = await fetch(url, { headers });
 
