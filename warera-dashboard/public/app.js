@@ -342,14 +342,19 @@ function parseTransaction(tx) {
   };
 }
 
+let craftIngestStatus = null; // { storeSize, ingestActive, typeCounts } — for the coverage note
+
 async function fetchCraftHistory() {
   const now = Date.now();
-  if (craftHistoryCache && now - craftHistoryCache.fetchedAt < 5 * 60_000) {
+  if (craftHistoryCache && now - craftHistoryCache.fetchedAt < 20_000) {
     return craftHistoryCache.transactions;
   }
-  const data = await api('/api/craft/history?hours=24&transactionType=itemMarket');
-  console.log('craft history raw payload (first 3):', Array.isArray(data) ? data.slice(0, 3) : data);
-  const raw = asArray(data);
+  const res = await fetch('/api/craft/history?hours=24');
+  const body = await res.json();
+  if (!res.ok || body.ok === false) throw new Error(body.error || 'Failed to load transaction history');
+  console.log('craft history status:', { storeSize: body.storeSize, ingestActive: body.ingestActive, typeCounts: body.typeCounts });
+  craftIngestStatus = { storeSize: body.storeSize, ingestActive: body.ingestActive, typeCounts: body.typeCounts };
+  const raw = asArray(body.data);
   const transactions = raw.map(parseTransaction).filter((tx) => tx !== null && tx.price !== null);
   craftHistoryCache = { fetchedAt: now, transactions };
   return transactions;
@@ -553,6 +558,7 @@ async function renderCraftRoi() {
   const grid = $('#rarityGrid');
   const breakdown = $('#craftBreakdown');
   const statroll = $('#statrollSection');
+  const note = $('#craftNote');
 
   try {
     const [prices, allTransactions] = await Promise.all([
@@ -565,6 +571,14 @@ async function renderCraftRoi() {
     renderRarityGrid(windowed, prices);
     renderBreakdown(windowed, prices);
     renderStatRollSection(windowed, prices);
+
+    if (craftIngestStatus) {
+      const equipCount = allTransactions.length;
+      const coverage = craftIngestStatus.ingestActive
+        ? `Building up live — ${equipCount} equipment sales collected so far (grows continuously while the server stays running; more after a deploy or wake-up means richer numbers).`
+        : `Data collection isn't running (check WARERA_API_KEY) — showing whatever was collected before it stopped.`;
+      note.textContent = coverage;
+    }
   } catch (err) {
     grid.innerHTML = `<p class="empty-state">Failed to load: ${err.message}</p>`;
     breakdown.innerHTML = '';
@@ -605,6 +619,11 @@ function init() {
   renderCraftRoi();
   refreshTicker();
   setInterval(refreshTicker, 20_000);
+  // The background ingest store grows continuously server-side — refresh
+  // periodically so the numbers visibly fill in without manual refreshing.
+  setInterval(() => {
+    if ($('#panel-craft').classList.contains('is-active')) renderCraftRoi();
+  }, 30_000);
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -120,13 +120,27 @@ A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
 
 - **Craft cost**: live, from scraps/steel quantities per rarity (hardcoded, confirmed
   static in-game values) × current scraps/steel prices from `itemTrading.getPrices`.
-- **Sale data**: pulled once per ~3 minutes from `/api/craft/history`, which pages
-  through `transaction.getPaginatedTransactions` (filtered to `transactionType:
-  itemMarket`) accumulating up to 2000 records or 24 hours of trades, whichever comes
-  first. **Requires `WARERA_API_KEY`** (see Configuration) — without it, this section
-  shows a clear message rather than data, while the rest of the dashboard keeps
-  working normally. The time-window buttons re-filter the already-fetched batch
-  client-side — no extra API calls per click.
+- **Sale data comes from a continuously-running background collector, not a
+  per-request fetch.** This API has no working server-side filter — `transactionType`
+  and `limit` are both silently ignored (confirmed via `/api/craft/debug`), returning
+  ~10 mixed records per page (wages, case openings, dismantles, market sales all
+  together) regardless of what's requested. At real game volume, no single request
+  could pull a representative sample without timing out. So `server.js` runs a loop
+  (`ingestTick`, starts on boot) that pulls one page every ~700ms indefinitely,
+  accumulating equipment sales into an in-memory store keyed by transaction `_id`.
+  `/api/craft/history` just reads from that store instantly — no pagination happens
+  inside a request anymore.
+- **This means coverage builds up over time, not instantly.** Right after a deploy or
+  a Render free-tier wake-up (sleeps after 15 min idle, which resets the in-memory
+  store), expect the tab to show very little — it only reflects what's been collected
+  since the process started, and cannot retroactively backfill a full day in one shot.
+  The panel note shows real collection status; the tab auto-refreshes every 30s so
+  numbers visibly fill in as more accumulates. If you want durable long-term coverage
+  across restarts, that's a real gap to solve for later (external keep-alive pings, a
+  paid always-on tier, or persisting the store to disk/a DB instead of memory).
+- **Requires `WARERA_API_KEY`** (see Configuration) — without it, the collector keeps
+  failing quietly (with backoff, so it's not hammering logs) and the tab shows a clear
+  message, while the rest of the dashboard keeps working normally.
 - **Rarity/slot/stat-roll are confirmed from live data** (via `/api/craft/debug`,
   included in this project for future debugging): equipment sales have a nested
   `item: { type: "equipment", code: "helmet4", skills: {...} }` — `helmet4`'s digit
@@ -137,19 +151,6 @@ A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
   rarity digit** — confirmed, not guessed — so weapon rarity genuinely isn't
   recoverable from the sale record, and the breakdown table pools all weapon sales
   together with an "indicative" tag rather than guessing, same as community trackers.
-- **Filtering happens client-side, not via the API's own filters.** A live check
-  showed the `transactionType` and `limit` *request* parameters are silently ignored
-  — the log actually returned mixes wages, case openings, dismantles, and market
-  sales together, at roughly 10 records per page regardless of what's requested.
-  `parseTransaction()` in `app.js` filters each record against its own
-  `transactionType`/`item.type` fields instead of trusting the request filter.
-- **Sample size is capped for reliability, not completeness.** At ~10 raw records per
-  page (mostly not equipment sales) and this app's 150 req/min self-throttle, pulling
-  a truly comprehensive 24h sample ("thousands per day" of activity) would take long
-  enough that Render's proxy or the browser could time out the request before it
-  finishes. `/api/craft/history` stops at 80 pages / 1000 raw records as a tradeoff —
-  raise `maxPages`/`maxRecords` in `server.js` if requests are comfortably finishing
-  well under whatever timeout applies and you want a bigger sample.
 - Sample-size confidence badges (high/medium/low) use thresholds I picked (100 / 20
   sales) — not a WarEra-published figure, just a reasonable line so a 2-sale average
   isn't shown with the same weight as a 500-sale one.

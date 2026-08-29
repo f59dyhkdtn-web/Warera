@@ -54,99 +54,115 @@ app.get('/api/market/transactions', (req, res) => {
   handle(warera.query('transaction.getPaginatedTransactions', input, { cacheTtlMs: 60_000 }), res);
 });
 
-// GET /api/craft/history?hours=24&transactionType=itemMarket
-// Aggregates several pages of transaction.getPaginatedTransactions into
-// one larger, time-windowed batch (so the frontend's 1h/2h/.../24h filter
-// buttons can re-slice client-side without hitting the API again). Result
-// is cached here for a few minutes since the pagination loop itself is
-// several API calls.
-const historyCache = new Map(); // key -> { expiresAt, data }
-const HISTORY_CACHE_TTL_MS = 3 * 60_000;
+// ---- Background transaction ingestion ----------------------------------
+//
+// This API has NO working server-side filter — transactionType and limit
+// are both silently ignored (confirmed via /api/craft/debug), and it only
+// returns ~10 records per page regardless of what's requested. At real
+// game volume (thousands of trades/day per rarity, per the person running
+// this), there is no way to pull a representative sample in one request —
+// any synchronous per-request pagination loop would either time out or
+// return a tiny, misleading sample.
+//
+// So: a background loop below continuously pulls one page every ~700ms
+// (respecting the same shared rate limiter as everything else in this
+// app), building up a real dataset over time in `txStore`, keyed by _id
+// to naturally dedupe. /api/craft/history just reads from that store
+// instantly — no pagination happens inside a request anymore.
+//
+// HONEST LIMITATION: this can only accumulate data going forward from
+// whenever the server process started — it cannot retroactively backfill
+// a full day of history in one shot (nothing could, without a working
+// filter). Right after a deploy, expect the store to be nearly empty;
+// coverage grows the longer the process stays up (roughly: ~1 hour
+// running ≈ ~1 hour of real coverage, up to the 26h cap below). Render's
+// free tier sleeps after 15 min idle, which resets this on the next
+// request — if you want durable long-term coverage, that's the tradeoff
+// to solve for later (keep-alive pings, or a paid always-on tier).
+const txStore = new Map(); // _id -> transaction record
+const STORE_WINDOW_MS = 26 * 60 * 60 * 1000; // slightly over 24h; trimmed below
+const STORE_MAX_SIZE = 50_000;
+let ingestCursor; // undefined = "start from the newest page"
+let ingestTicksSinceResync = 0;
+const RESYNC_EVERY_TICKS = 200; // periodically re-check the newest page so brand-new trades aren't missed
+let ingestFailures = 0;
 
-app.get('/api/craft/history', async (req, res) => {
-  const hours = req.query.hours ? Number(req.query.hours) : 24;
-  const transactionType = req.query.transactionType || 'itemMarket';
-  const cacheKey = `${transactionType}:${hours}`;
-  const forceFresh = req.query.fresh === '1'; // bypasses the cache below entirely
-
-  const cached = !forceFresh && historyCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) {
-    return res.json({
-      ok: true,
-      data: cached.data,
-      cached: true,
-      pageSummary: cached.pageSummary,
-      typeCounts: cached.typeCounts,
-    });
-  }
-
+async function ingestTick() {
   try {
-    const oldestMs = Date.now() - hours * 60 * 60 * 1000;
-    const getTimestamp = (tx) => {
-      const raw = tx.createdAt ?? tx.timestamp ?? tx.date ?? tx.time ?? null;
-      const t = raw ? new Date(raw).getTime() : NaN;
-      return Number.isFinite(t) ? t : null;
-    };
-    // Transaction history needs an authenticated request — a WARERA_API_KEY
-    // env var (an official per-account token from WarEra's own "API
-    // Tokens" account settings screen) sent as X-API-Key on the PRIMARY
-    // API. Without one configured, this reliably 401s — that's expected,
-    // not a bug, until a token is set.
-    //
-    // NOTE ON PAGE SIZE: a live check (/api/craft/debug) showed the API
-    // ignores the "limit" input and returns roughly 10 records per page
-    // regardless, and the log mixes EVERY transaction type together (wage,
-    // openCase, dismantleItem, itemMarket, etc.) — the "transactionType"
-    // input filter is ignored too. So maxPages needs to be much higher
-    // than it would if paging returned ~100 filtered records at a time;
-    // filtering down to real itemMarket equipment sales happens client-side
-    // in app.js against each record's own transactionType field instead.
-    //
-    // maxPages is deliberately capped well short of what would cover a
-    // full 24h of "thousands per day" activity — at ~10 records/page and
-    // our own 150/min self-throttle, a much higher cap risks the request
-    // itself timing out (Render's proxy or the browser) before it
-    // finishes, which would be worse than a smaller-but-reliable sample.
-    // This trades sample size for reliability; raise it if it turns out
-    // requests comfortably finish well under whatever timeout applies.
-    // Not passing transactionType here (even though the API appears to
-    // ignore it for filtering) — a hypothesis for the last bug was that
-    // sending a filter alongside a cursor makes the API invalidate/reset
-    // the cursor, which would explain pagination silently not advancing.
-    // Filtering happens entirely client-side against each record's own
-    // fields regardless, so there's no downside to dropping it here.
-    const pageLog = [];
-    const transactions = await warera.queryPaginated(
-      'transaction.getPaginatedTransactions',
-      {},
-      { pageSize: 100, maxPages: 80, maxRecords: 1000, oldestMs, getTimestamp, pageLog }
-    );
-    const typeCounts = {};
-    transactions.forEach((t) => {
-      const key = t.transactionType || '(none)';
-      typeCounts[key] = (typeCounts[key] || 0) + 1;
-    });
-    console.log(`craft history: ${transactions.length} records over ${pageLog.length} pages —`, typeCounts);
-    historyCache.set(cacheKey, {
-      data: transactions,
-      expiresAt: Date.now() + HISTORY_CACHE_TTL_MS,
-      pageSummary: pageLog.slice(0, 10),
-      typeCounts,
-    });
-    res.json({ ok: true, data: transactions, cached: false, pageSummary: pageLog.slice(0, 10), typeCounts });
+    const input = { limit: 100 };
+    if (ingestCursor !== undefined) input.cursor = ingestCursor;
+    const data = await warera.query('transaction.getPaginatedTransactions', input, { skipCache: true });
+    const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+
+    for (const item of items) {
+      if (item && item._id) txStore.set(item._id, item);
+    }
+
+    if (txStore.size > STORE_MAX_SIZE) {
+      const cutoff = Date.now() - STORE_WINDOW_MS;
+      for (const [id, tx] of txStore) {
+        const t = tx.createdAt ? new Date(tx.createdAt).getTime() : null;
+        if (t !== null && t < cutoff) txStore.delete(id);
+        if (txStore.size <= STORE_MAX_SIZE * 0.8) break;
+      }
+    }
+
+    ingestFailures = 0;
+    ingestTicksSinceResync += 1;
+    const nextCursor = data?.nextCursor ?? data?.cursor ?? data?.meta?.nextCursor;
+    if (!nextCursor || ingestTicksSinceResync >= RESYNC_EVERY_TICKS) {
+      ingestCursor = undefined;
+      ingestTicksSinceResync = 0;
+    } else {
+      ingestCursor = nextCursor;
+    }
   } catch (err) {
-    console.error(err);
-    const authIssue = /401/.test(err.message);
-    res.status(502).json({
-      ok: false,
-      error: authIssue
-        ? 'Transaction history needs an authenticated request. Set a WARERA_API_KEY ' +
-          'environment variable to a token generated from your WarEra account\'s API ' +
-          'Tokens screen — the rest of the dashboard works fine without it.'
-        : err.message,
-    });
+    ingestFailures += 1;
+    if (ingestFailures <= 3 || ingestFailures % 20 === 0) {
+      console.error(`craft ingest tick failed (${ingestFailures} in a row):`, err.message);
+    }
   }
+}
+
+const INGEST_INTERVAL_MS = 700;
+setInterval(() => {
+  // Back off when failing repeatedly (e.g. no WARERA_API_KEY set yet)
+  // instead of hammering the API/logs every 700ms.
+  if (ingestFailures > 3 && ingestFailures % 10 !== 0) return;
+  ingestTick();
+}, INGEST_INTERVAL_MS);
+ingestTick();
+
+// GET /api/craft/history?hours=24
+// Reads straight from the continuously-growing txStore above — instant,
+// no per-request API calls. `storeSize`/`typeCounts`/`ingestFailures` are
+// included so the frontend (or you, via console) can see real ingestion
+// health rather than just an empty-looking result.
+app.get('/api/craft/history', (req, res) => {
+  const hours = req.query.hours ? Number(req.query.hours) : 24;
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+
+  const windowed = [...txStore.values()].filter((tx) => {
+    const t = tx.createdAt ? new Date(tx.createdAt).getTime() : null;
+    return t === null || t >= cutoff;
+  });
+
+  const typeCounts = {};
+  windowed.forEach((t) => {
+    const key = t.transactionType || '(none)';
+    typeCounts[key] = (typeCounts[key] || 0) + 1;
+  });
+
+  res.json({
+    ok: true,
+    data: windowed,
+    storeSize: txStore.size,
+    typeCounts,
+    ingestFailures,
+    ingestActive: ingestFailures <= 3,
+  });
 });
+
 
 // GET /api/craft/debug
 // Temporary diagnostic: returns ONE raw, unflattened page of
