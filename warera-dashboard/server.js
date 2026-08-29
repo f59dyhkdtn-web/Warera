@@ -67,10 +67,17 @@ app.get('/api/craft/history', async (req, res) => {
   const hours = req.query.hours ? Number(req.query.hours) : 24;
   const transactionType = req.query.transactionType || 'itemMarket';
   const cacheKey = `${transactionType}:${hours}`;
+  const forceFresh = req.query.fresh === '1'; // bypasses the cache below entirely
 
-  const cached = historyCache.get(cacheKey);
+  const cached = !forceFresh && historyCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
-    return res.json({ ok: true, data: cached.data, cached: true });
+    return res.json({
+      ok: true,
+      data: cached.data,
+      cached: true,
+      pageSummary: cached.pageSummary,
+      typeCounts: cached.typeCounts,
+    });
   }
 
   try {
@@ -114,13 +121,19 @@ app.get('/api/craft/history', async (req, res) => {
       {},
       { pageSize: 100, maxPages: 80, maxRecords: 1000, oldestMs, getTimestamp, pageLog }
     );
-    const itemMarketCount = transactions.filter((t) => t.transactionType === 'itemMarket').length;
-    console.log(
-      `craft history: ${transactions.length} records over ${pageLog.length} pages, ` +
-      `${itemMarketCount} itemMarket, cursor sample: ${pageLog.slice(0, 3).map((p) => p.cursorOut).join(' | ')}`
-    );
-    historyCache.set(cacheKey, { data: transactions, expiresAt: Date.now() + HISTORY_CACHE_TTL_MS });
-    res.json({ ok: true, data: transactions, cached: false, pageSummary: pageLog.slice(0, 10) });
+    const typeCounts = {};
+    transactions.forEach((t) => {
+      const key = t.transactionType || '(none)';
+      typeCounts[key] = (typeCounts[key] || 0) + 1;
+    });
+    console.log(`craft history: ${transactions.length} records over ${pageLog.length} pages —`, typeCounts);
+    historyCache.set(cacheKey, {
+      data: transactions,
+      expiresAt: Date.now() + HISTORY_CACHE_TTL_MS,
+      pageSummary: pageLog.slice(0, 10),
+      typeCounts,
+    });
+    res.json({ ok: true, data: transactions, cached: false, pageSummary: pageLog.slice(0, 10), typeCounts });
   } catch (err) {
     console.error(err);
     const authIssue = /401/.test(err.message);
