@@ -675,9 +675,12 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
 
 .statroll-card__value {
   font-family: var(--display);
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--brass);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .statroll-card__count {

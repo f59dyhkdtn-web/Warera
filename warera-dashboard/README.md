@@ -163,14 +163,21 @@ A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
   message, while the rest of the dashboard keeps working normally.
 - **Rarity/slot/stat-roll are confirmed from live data** (via `/api/craft/debug`,
   included in this project for future debugging): equipment sales have a nested
-  `item: { type: "equipment", code: "helmet4", skills: {...} }` — `helmet4`'s digit
-  (1–6) matches common→mythic order, and `skills` holds the actual stat roll (e.g.
-  `{dodge: 25}` for boots, `{armor: 2}` for pants) — bucketed by whatever value comes
-  first in that object, regardless of its name, since it varies by slot. Price is
-  `money` divided by `quantity`. **Weapon sale codes (e.g. `knife`) don't carry a
-  rarity digit** — confirmed, not guessed — so weapon rarity genuinely isn't
-  recoverable from the sale record, and the breakdown table pools all weapon sales
-  together with an "indicative" tag rather than guessing, same as community trackers.
+  `item: { code: "helmet4", skills: {...} }` — `helmet4`'s digit (1–6) matches
+  common→mythic order for armor. Price is `money` divided by `quantity`.
+- **Weapon rarity comes from a player-confirmed name→rarity mapping**
+  (`WEAPON_NAME_TO_RARITY` in `app.js`: knife=common, rifle=uncommon, gun=rare,
+  sniper=epic, tank=legendary, jet=mythic) — each weapon name is its own rarity
+  tier, the same way armor has one piece per slot+digit. This isn't a documented API
+  field like armor's digit suffix is; it's what the person running this confirmed
+  in-game. If a new weapon name shows up that isn't in that map, its rarity is left
+  unknown rather than guessed — check `item codes collected so far` in the console
+  (logged automatically) to catch that.
+- **Weapon stat rolls are a combination of two values** (e.g. attack + crit chance),
+  not one — `parseTransaction()` builds a combined `statKey` from every field in
+  `skills` sorted by name, so the stat-roll grid buckets by the full combination
+  (a specific attack+crit pairing), matching how a single craft actually rolls both
+  at once rather than treating them as independent.
 - Sample-size confidence badges (high/medium/low) use thresholds I picked (100 / 20
   sales) — not a WarEra-published figure, just a reasonable line so a 2-sale average
   isn't shown with the same weight as a 500-sale one.

@@ -258,7 +258,20 @@ const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'];
 // as the weighting for a rarity's overall P(profit).
 const TYPE_ODDS = { Weapon: 30, Helmet: 14, Chest: 14, Gloves: 14, Pants: 14, Boots: 14 };
 const SLOTS = Object.keys(TYPE_ODDS);
-const ARMOR_SLOTS = SLOTS.filter((s) => s !== 'Weapon'); // stat-roll grid excludes Weapon
+
+// User-confirmed in-game (not from any documented API field): each weapon
+// name is its own single rarity tier, the same way each armor piece has
+// exactly one rarity per digit. Not independently verifiable against a
+// schema the way armor's digit-suffix pattern was — if a name shows up
+// that isn't in this map, its rarity is left unknown rather than guessed.
+const WEAPON_NAME_TO_RARITY = {
+  knife: 'common',
+  rifle: 'uncommon',
+  gun: 'rare',
+  sniper: 'epic',
+  tank: 'legendary',
+  jet: 'mythic',
+};
 
 // Sample-size thresholds for the confidence badge. Not a WarEra figure —
 // just a reasonable line to draw so a 2-sale "average" isn't presented
@@ -270,7 +283,6 @@ let craftHistoryCache = null; // { fetchedAt, hours, transactions: parsed[] }
 let craftHoursWindow = 24;
 let selectedRarity = 'epic';
 let selectedStatSlot = 'Chest';
-let selectedWeaponName = null; // set dynamically once real weapon names are observed
 
 async function getMaterialPrices() {
   const data = await api('/api/market/prices');
@@ -317,11 +329,17 @@ function parseTransaction(tx) {
   const money = Number(tx.money);
   const price = Number.isFinite(money) ? money / quantity : null;
 
-  // First value in `skills` is treated as "the" stat roll, regardless of
-  // its name (dodge/armor/precision/attack all appear depending on slot)
-  // — good enough to bucket sales by, without hardcoding a name per slot.
-  const skillValues = tx.item.skills ? Object.values(tx.item.skills) : [];
-  const statValue = Number(skillValues[0]);
+  // Armor has one stat (dodge/armor/precision); weapons have two (attack +
+  // critChance) — a craft rolls ALL of them together as one combination,
+  // so they're grouped as a unit (statKey), not averaged separately. Kept
+  // sorted by stat name so the same combination always produces the same
+  // key regardless of the order fields happened to arrive in.
+  const skills = tx.item.skills && typeof tx.item.skills === 'object' ? tx.item.skills : {};
+  const skillEntries = Object.entries(skills)
+    .filter(([, v]) => Number.isFinite(Number(v)))
+    .sort(([a], [b]) => a.localeCompare(b));
+  const statKey = skillEntries.length ? skillEntries.map(([k, v]) => `${k}:${v}`).join('|') : null;
+  const statLabel = skillEntries.length ? skillEntries.map(([, v]) => v).join(' / ') : null;
 
   const tsRaw = tx.createdAt ?? tx.timestamp ?? null;
   const timestampMs = tsRaw ? new Date(tsRaw).getTime() : null;
@@ -333,9 +351,8 @@ function parseTransaction(tx) {
     slot = ARMOR_CODE_TO_SLOT[armorMatch[1].toLowerCase()];
     rarity = RARITIES[Number(armorMatch[2]) - 1] ?? null;
   } else if (itemCode) {
-    // Not an armor-pattern code, but still a real equipment sale — a
-    // weapon. Rarity genuinely unknown from the code (see note above).
     slot = 'Weapon';
+    rarity = WEAPON_NAME_TO_RARITY[itemCode.toLowerCase()] ?? null;
   }
 
   return {
@@ -343,7 +360,8 @@ function parseTransaction(tx) {
     rarity,
     slot,
     price: Number.isFinite(price) ? price : null,
-    statValue: Number.isFinite(statValue) ? statValue : null,
+    statKey,
+    statLabel,
     timestampMs: Number.isFinite(timestampMs) ? timestampMs : null,
   };
 }
@@ -379,28 +397,27 @@ function craftCostFor(rarity, prices) {
 }
 
 /**
- * Averages price PER specific stat roll first, then averages those
- * bucket-averages together (unweighted) — a craft has roughly equal odds
- * of landing on any stat value, so a straight average of raw sales would
- * be skewed by however the stat-value mix happened to trade recently
- * (e.g. a run of high-roll sales inflating the "expected" price). Falls
- * back to a plain average when no stat-roll data is available (currently:
- * weapon sales — see the "indicative" note elsewhere).
+ * Averages price PER specific stat-roll combination first, then averages
+ * those bucket-averages together (unweighted) — a craft has roughly equal
+ * odds of landing on any combination, so a straight average of raw sales
+ * would be skewed by however the mix happened to trade recently (e.g. a
+ * run of high-roll sales inflating the "expected" price). Falls back to a
+ * plain average when no stat-roll data is available at all.
  */
 function statsFor(transactions, rarity, slot, craftTotal) {
   const matches = transactions.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
   const count = matches.length;
   if (count === 0) return { count: 0, avgPrice: null, marginAbs: null, marginPct: null, pProfit: null };
 
-  const withStat = matches.filter((tx) => tx.statValue !== null);
+  const withStat = matches.filter((tx) => tx.statKey !== null);
   let avgPrice;
   let pProfit;
 
   if (withStat.length > 0) {
     const byValue = new Map();
     withStat.forEach((tx) => {
-      if (!byValue.has(tx.statValue)) byValue.set(tx.statValue, []);
-      byValue.get(tx.statValue).push(tx.price);
+      if (!byValue.has(tx.statKey)) byValue.set(tx.statKey, []);
+      byValue.get(tx.statKey).push(tx.price);
     });
     const bucketAverages = [...byValue.values()].map((prices) => prices.reduce((s, p) => s + p, 0) / prices.length);
     avgPrice = bucketAverages.reduce((s, a) => s + a, 0) / bucketAverages.length;
@@ -478,15 +495,14 @@ function renderBreakdown(transactions, prices) {
   const craftTotal = craftCostFor(selectedRarity, prices);
 
   const rows = SLOTS.map((slot) => {
-    // Weapon sales carry no reliable rarity signal in their itemCode (see
-    // parseTransaction) — pooling ALL weapon sales here rather than
-    // filtering by selectedRarity, and flagging it, beats silently
-    // showing zero when data actually exists.
-    const s = slot === 'Weapon'
-      ? statsFor(transactions, null, slot, craftTotal)
-      : statsFor(transactions, selectedRarity, slot, craftTotal);
+    const s = statsFor(transactions, selectedRarity, slot, craftTotal);
     const odds = TYPE_ODDS[slot];
-    return { slot, odds, ...s, indicative: slot === 'Weapon' };
+    // Weapon rarity comes from a player-confirmed name→rarity mapping
+    // (WEAPON_NAME_TO_RARITY), not a documented API field — flagged
+    // lightly so it's clear that row rests on slightly different footing
+    // than armor's digit-suffix parsing, without implying the data itself
+    // is unreliable.
+    return { slot, odds, ...s, unverified: slot === 'Weapon' };
   });
 
   el.innerHTML = `
@@ -503,7 +519,7 @@ function renderBreakdown(transactions, prices) {
             .map(
               (r) => `
             <tr>
-              <td>${r.slot}${r.indicative ? ' <span class="indicative-tag" title="Rarity can\'t be read from weapon sale codes — pooled across all rarities, compared against this rarity\'s craft cost">indicative</span>' : ''}</td>
+              <td>${r.slot}${r.unverified ? ' <span class="indicative-tag" title="Rarity comes from a player-confirmed weapon name mapping, not a documented API field">unverified mapping</span>' : ''}</td>
               <td class="num">${r.odds}%</td>
               <td class="num">${r.avgPrice !== null ? fmtNum(r.avgPrice) : '—'}</td>
               <td class="num ${r.marginAbs === null ? '' : r.marginAbs >= 0 ? 'up' : 'down'}">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)}` : '—'}</td>
@@ -516,33 +532,34 @@ function renderBreakdown(transactions, prices) {
         </tbody>
       </table>
     </div>
-    ${rows.some((r) => r.indicative) ? '<p class="breakdown-footnote">Weapon rarity can\'t be determined from the sale data, so Weapon figures pool sales across all rarities and compare them against the selected rarity\'s craft cost — treat as a rough estimate, not a precise one.</p>' : ''}
   `;
 }
 
 /**
- * Shared grid renderer for both the armor and weapon stat-roll sections —
- * groups matching sales by statValue, averages price per bucket, and
- * optionally shows the diff against a craft cost (armor has one craft
- * cost per rarity; weapons don't have a confirmed rarity to cost against
- * yet, so that comparison is simply omitted there rather than guessed).
+/**
+ * Shared grid renderer for the stat-roll section — groups matching sales
+ * by statKey (a full stat combination: one value for armor, two for
+ * weapons — see parseTransaction), averages price per bucket, and shows
+ * the diff against a craft cost.
  */
 function statRollGridHtml(matches, craftTotal) {
-  const withStat = matches.filter((tx) => tx.statValue !== null);
+  const withStat = matches.filter((tx) => tx.statKey !== null);
   if (withStat.length === 0) return null;
 
-  const byValue = new Map();
+  const byKey = new Map(); // statKey -> { label, prices: [] }
   withStat.forEach((tx) => {
-    if (!byValue.has(tx.statValue)) byValue.set(tx.statValue, []);
-    byValue.get(tx.statValue).push(tx.price);
+    if (!byKey.has(tx.statKey)) byKey.set(tx.statKey, { label: tx.statLabel, prices: [] });
+    byKey.get(tx.statKey).prices.push(tx.price);
   });
-  const rows = [...byValue.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([statValue, prices2]) => {
+  const rows = [...byKey.entries()]
+    .map(([key, { label, prices: prices2 }]) => {
       const avg = prices2.reduce((s, p) => s + p, 0) / prices2.length;
       const diff = craftTotal !== null ? avg - craftTotal : null;
-      return { statValue, count: prices2.length, avg, diff };
-    });
+      return { key, label, count: prices2.length, avg, diff };
+    })
+    // Sort by the first number in the label (works for both single-stat
+    // "24" and multi-stat "128 / 16" combinations).
+    .sort((a, b) => parseFloat(a.label) - parseFloat(b.label));
 
   return `
     <div class="statroll-grid">
@@ -550,7 +567,7 @@ function statRollGridHtml(matches, craftTotal) {
         .map(
           (r) => `
         <div class="statroll-card">
-          <div class="statroll-card__value">${r.statValue}</div>
+          <div class="statroll-card__value">${r.label}</div>
           <div class="statroll-card__count">${r.count}× seen</div>
           <div class="statroll-card__price">${fmtNum(r.avg)}</div>
           <div class="statroll-card__diff ${r.diff === null ? '' : r.diff >= 0 ? 'up' : 'down'}">${r.diff !== null ? `${r.diff >= 0 ? '+' : ''}${fmtNum(r.diff)} vs craft` : ''}</div>
@@ -567,11 +584,14 @@ function renderStatRollSection(transactions, prices) {
   const craftTotal = craftCostFor(selectedRarity, prices);
   const matches = transactions.filter((tx) => tx.rarity === selectedRarity && tx.slot === selectedStatSlot);
 
-  const tabs = ARMOR_SLOTS
+  const tabs = SLOTS
     .map((slot) => `<button class="statroll-tab ${slot === selectedStatSlot ? 'is-active' : ''}" data-slot="${slot}">${slot}</button>`)
     .join('');
 
   const grid = statRollGridHtml(matches, craftTotal);
+  const weaponNote = selectedStatSlot === 'Weapon'
+    ? '<p class="breakdown-footnote">Weapon stat rolls combine two values (e.g. attack / crit chance) — each card is one full combination, not a single stat.</p>'
+    : '';
 
   el.innerHTML = grid
     ? `
@@ -580,6 +600,7 @@ function renderStatRollSection(transactions, prices) {
         <div class="statroll-tabs">${tabs}</div>
       </div>
       ${grid}
+      ${weaponNote}
     `
     : `
       <div class="statroll-head">
@@ -603,68 +624,6 @@ function renderStatRollSection(transactions, prices) {
   });
 }
 
-/**
- * Weapon sales don't have a confirmed rarity (see the "indicative" note
- * in renderBreakdown) — but each distinct weapon NAME (sniper, gun, tank,
- * ...) is presumably its own single rarity tier already, one weapon per
- * rarity the same way there's one armor piece per slot+rarity. So rather
- * than wait on that mapping, this groups directly by whatever weapon
- * names actually show up in the data — tabs build themselves as new
- * names are observed, no hardcoded list.
- */
-function renderWeaponStatRollSection(transactions) {
-  const el = $('#weaponStatrollSection');
-  if (!el) return;
-
-  const weaponSales = transactions.filter((tx) => tx.slot === 'Weapon');
-  const names = [...new Set(weaponSales.map((tx) => tx.itemCode))].filter(Boolean).sort();
-
-  if (names.length === 0) {
-    el.innerHTML = `
-      <div class="statroll-head"><h3>Value per stat roll — Weapons</h3></div>
-      <p class="empty-state">No weapon sales collected yet in this window.</p>
-    `;
-    return;
-  }
-
-  if (!selectedWeaponName || !names.includes(selectedWeaponName)) {
-    selectedWeaponName = names[0];
-  }
-
-  const tabs = names
-    .map((name) => `<button class="statroll-tab ${name === selectedWeaponName ? 'is-active' : ''}" data-weapon="${name}">${name} <span class="tab-count">(${weaponSales.filter((tx) => tx.itemCode === name).length})</span></button>`)
-    .join('');
-
-  const matches = weaponSales.filter((tx) => tx.itemCode === selectedWeaponName);
-  // No craft-cost diff shown here — which rarity's cost applies to this
-  // weapon isn't confirmed yet, so a diff would be a guess dressed up as
-  // a number. Once name→rarity is confirmed, this can pass a real total.
-  const grid = statRollGridHtml(matches, null);
-
-  el.innerHTML = grid
-    ? `
-      <div class="statroll-head">
-        <h3>Value per stat roll — ${selectedWeaponName}</h3>
-        <div class="statroll-tabs">${tabs}</div>
-      </div>
-      ${grid}
-      <p class="breakdown-footnote">Rarity for this weapon isn't confirmed yet, so no craft-cost comparison is shown — just real average price per stat roll.</p>
-    `
-    : `
-      <div class="statroll-head">
-        <h3>Value per stat roll — Weapons</h3>
-        <div class="statroll-tabs">${tabs}</div>
-      </div>
-      <p class="empty-state">${matches.length} sale${matches.length === 1 ? '' : 's'} for ${selectedWeaponName}, but none carried a recognizable stat field.</p>
-    `;
-
-  $$('.statroll-tab', el).forEach((tab) => {
-    tab.addEventListener('click', () => {
-      selectedWeaponName = tab.dataset.weapon;
-      renderCraftRoi();
-    });
-  });
-}
 
 async function renderCraftRoi() {
   const grid = $('#rarityGrid');
@@ -683,7 +642,6 @@ async function renderCraftRoi() {
     renderRarityGrid(windowed, prices);
     renderBreakdown(windowed, prices);
     renderStatRollSection(windowed, prices);
-    renderWeaponStatRollSection(windowed);
 
     if (craftIngestStatus) {
       const equipCount = allTransactions.length;
