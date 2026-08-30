@@ -318,33 +318,25 @@ async function getMaterialPrices() {
 /**
  * Cheapest active sell (ask) order for an item — what you'd actually pay
  * to buy it right now, as opposed to itemTrading.getPrices' reference
- * number. tradingOrder.getTopOrders' response shape isn't independently
- * confirmed, so this logs the raw payload and tries a few plausible field
- * names for "which side is this order on" and "what's its price" — if the
- * resulting cost still looks wrong, check that console log for the real
- * field names.
+ * number. Confirmed live (via console): tradingOrder.getTopOrders returns
+ * { buyOrders: [...], sellOrders: [...] }, each order having a numeric
+ * `price` field — no side/type field needed, the two books are already
+ * split out.
  */
 async function getBestAskPrice(itemCode, fallbackPrice) {
   try {
     const res = await fetch(`/api/market/orders?item=${itemCode}`);
     const body = await res.json();
     if (!res.ok || body.ok === false) throw new Error(body.error || 'orders fetch failed');
-    console.log(`top orders for ${itemCode}:`, body.data);
 
-    const orders = asArray(body.data);
-    const sellOrders = orders.filter((o) => {
-      const side = String(pick(o, ['side', 'type', 'orderType', 'kind'], '')).toLowerCase();
-      return side.includes('sell') || side.includes('ask');
-    });
-    const candidates = (sellOrders.length ? sellOrders : orders)
-      .map((o) => Number(pick(o, ['price', 'unitPrice', 'askPrice', 'sellPrice'], null)))
-      .filter(Number.isFinite);
+    const sellOrders = Array.isArray(body.data?.sellOrders) ? body.data.sellOrders : [];
+    const prices = sellOrders.map((o) => Number(o.price)).filter(Number.isFinite);
 
-    if (candidates.length === 0) {
-      console.warn(`no usable sell price found for ${itemCode} in orders response — using reference price instead`);
+    if (prices.length === 0) {
+      console.warn(`no sell orders found for ${itemCode} — using reference price instead`);
       return fallbackPrice;
     }
-    return Math.min(...candidates);
+    return Math.min(...prices);
   } catch (err) {
     console.warn(`best-ask fetch failed for ${itemCode}, falling back to reference price:`, err.message);
     return fallbackPrice;

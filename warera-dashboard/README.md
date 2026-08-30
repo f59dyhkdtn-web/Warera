@@ -152,9 +152,10 @@ with one deliberate exception, see "Recency vs completeness" below.
   against the actual in-game order book showed it meaningfully off from the price
   you'd really pay. `getBestAskPrice()` in `app.js` fetches `tradingOrder.getTopOrders`
   for scraps/steel specifically and uses the cheapest active sell order (what buying
-  right now actually costs), falling back to the reference price only if that fetch
-  fails. This endpoint's response shape isn't independently confirmed either — the
-  raw payload is logged to the console for verification.
+  right now actually costs). Confirmed live via console: the response is
+  `{ buyOrders: [...], sellOrders: [...] }`, each order with a plain numeric `price`
+  field — falls back to the reference price only if that fetch fails or returns no
+  sell orders.
 - **Scraps/steel prices can be manually overridden** via the two inputs next to the
   recency controls — useful for checking a specific price point rather than
   whatever's live. Blank means "use live price"; "Reset to live" clears both at once.
