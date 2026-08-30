@@ -281,6 +281,12 @@ const CONFIDENCE = { high: 100, medium: 20 };
 let materialPriceCache = null;
 let craftHistoryCache = null; // { fetchedAt, hours, transactions: parsed[] }
 let craftHoursWindow = 24;
+// Two independent ways to pick which sales feed each stat-roll bucket's
+// average: 'window' (the hours buttons, with fallback — see buildStatBuckets)
+// or 'lastN' (each combination's own N most recent sales, regardless of
+// when they happened — see buildStatBucketsLastN).
+let recencyMode = 'window';
+let lastNCount = 2;
 let selectedRarity = 'epic';
 let selectedStatSlot = 'Chest';
 
@@ -397,36 +403,95 @@ function craftCostFor(rarity, prices) {
 }
 
 /**
- * Averages price PER specific stat-roll combination first, then averages
- * those bucket-averages together (unweighted) — a craft has roughly equal
- * odds of landing on any combination, so a straight average of raw sales
- * would be skewed by however the mix happened to trade recently (e.g. a
- * run of high-roll sales inflating the "expected" price). Falls back to a
- * plain average when no stat-roll data is available at all.
+ * Groups sales by exact stat-roll combination (statKey) and averages
+ * price within each combination, then averages those bucket-averages
+ * together (unweighted) — a craft has roughly equal odds of landing on
+ * any combination, so a straight average of raw sales would be skewed by
+ * however the mix happened to trade recently.
+ *
+ * Takes BOTH the recency-windowed sales and the full ~24h history: for
+ * each bucket, prefers the windowed price (freshest) but falls back to
+ * the full-history price for that specific bucket if the window has zero
+ * sales for it. Without this, a real but infrequently-traded combination
+ * (e.g. a top-roll item that sold once 8h ago but not in the last hour)
+ * would silently vanish from the estimate on a short window — not because
+ * it's rare, but because the window happened to miss it.
  */
-function statsFor(transactions, rarity, slot, craftTotal) {
-  const matches = transactions.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
-  const count = matches.length;
+function buildStatBuckets(windowedMatches, fullMatches) {
+  const fullByKey = new Map(); // statKey -> { label, prices: [] }
+  fullMatches.forEach((tx) => {
+    if (tx.statKey === null) return;
+    if (!fullByKey.has(tx.statKey)) fullByKey.set(tx.statKey, { label: tx.statLabel, prices: [], recentPrices: [] });
+    fullByKey.get(tx.statKey).prices.push(tx.price);
+  });
+  windowedMatches.forEach((tx) => {
+    if (tx.statKey === null || !fullByKey.has(tx.statKey)) return;
+    fullByKey.get(tx.statKey).recentPrices.push(tx.price);
+  });
+
+  return [...fullByKey.entries()].map(([key, { label, prices, recentPrices }]) => {
+    const usedPrices = recentPrices.length > 0 ? recentPrices : prices;
+    const avg = usedPrices.reduce((s, p) => s + p, 0) / usedPrices.length;
+    return { key, label, avg, totalCount: prices.length, usedCount: usedPrices.length, isFallback: recentPrices.length === 0 };
+  });
+}
+
+/**
+ * Alternate mode: instead of a shared time window, takes each specific
+ * combination's own N most recent sales, whenever they happened. Two
+ * combinations that trade at very different frequencies (a common combo
+ * with 50 sales/day vs a rare one with 2/week) both get "how has *this*
+ * combo actually been selling lately" on equal footing — a fixed time
+ * window would show a rich recent sample for one and nothing for the
+ * other, even though both are equally "current" for their own frequency.
+ */
+function buildStatBucketsLastN(fullMatches, n) {
+  const byKey = new Map(); // statKey -> { label, txs: [] }
+  fullMatches.forEach((tx) => {
+    if (tx.statKey === null) return;
+    if (!byKey.has(tx.statKey)) byKey.set(tx.statKey, { label: tx.statLabel, txs: [] });
+    byKey.get(tx.statKey).txs.push(tx);
+  });
+
+  return [...byKey.entries()].map(([key, { label, txs }]) => {
+    const sorted = [...txs].sort((a, b) => (b.timestampMs ?? 0) - (a.timestampMs ?? 0));
+    const used = sorted.slice(0, n);
+    const avg = used.reduce((s, tx) => s + tx.price, 0) / used.length;
+    return { key, label, avg, totalCount: txs.length, usedCount: used.length, isFallback: false };
+  });
+}
+
+// Dispatches to whichever recency mode is currently selected — everything
+// downstream (rarity cards, breakdown table, stat-roll grid) reads
+// through this, so switching modes updates all of them consistently.
+function getStatBuckets(windowedMatches, fullMatches) {
+  return recencyMode === 'lastN'
+    ? buildStatBucketsLastN(fullMatches, lastNCount)
+    : buildStatBuckets(windowedMatches, fullMatches);
+}
+
+function statsFor(windowedTx, fullTx, rarity, slot, craftTotal) {
+  const windowedMatches = windowedTx.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
+  const fullMatches = fullTx.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
+  const count = fullMatches.length; // total sample backing this row, not just the recency window
   if (count === 0) return { count: 0, avgPrice: null, marginAbs: null, marginPct: null, pProfit: null };
 
-  const withStat = matches.filter((tx) => tx.statKey !== null);
+  const withStat = fullMatches.filter((tx) => tx.statKey !== null);
   let avgPrice;
   let pProfit;
 
   if (withStat.length > 0) {
-    const byValue = new Map();
-    withStat.forEach((tx) => {
-      if (!byValue.has(tx.statKey)) byValue.set(tx.statKey, []);
-      byValue.get(tx.statKey).push(tx.price);
-    });
-    const bucketAverages = [...byValue.values()].map((prices) => prices.reduce((s, p) => s + p, 0) / prices.length);
-    avgPrice = bucketAverages.reduce((s, a) => s + a, 0) / bucketAverages.length;
+    const buckets = getStatBuckets(windowedMatches, fullMatches);
+    avgPrice = buckets.reduce((s, b) => s + b.avg, 0) / buckets.length;
     pProfit = craftTotal !== null
-      ? (bucketAverages.filter((a) => a > craftTotal).length / bucketAverages.length) * 100
+      ? (buckets.filter((b) => b.avg > craftTotal).length / buckets.length) * 100
       : null;
   } else {
-    avgPrice = matches.reduce((s, tx) => s + tx.price, 0) / count;
-    pProfit = craftTotal !== null ? (matches.filter((tx) => tx.price > craftTotal).length / count) * 100 : null;
+    // No stat-roll data at all for this slot — fall back to a plain
+    // average, preferring the recency window if it has any sales.
+    const priceSource = windowedMatches.length > 0 ? windowedMatches : fullMatches;
+    avgPrice = priceSource.reduce((s, tx) => s + tx.price, 0) / priceSource.length;
+    pProfit = craftTotal !== null ? (priceSource.filter((tx) => tx.price > craftTotal).length / priceSource.length) * 100 : null;
   }
 
   const marginAbs = avgPrice !== null && craftTotal !== null ? avgPrice - craftTotal : null;
@@ -441,14 +506,14 @@ function confidenceLabel(count) {
   return { label: 'no data', cls: 'none' };
 }
 
-function renderRarityGrid(transactions, prices) {
+function renderRarityGrid(windowedTx, fullTx, prices) {
   const grid = $('#rarityGrid');
   const perRarity = RARITIES.map((rarity) => {
     const craftTotal = craftCostFor(rarity, prices);
     // Pools every sale of this rarity across all slots — a reasonable
     // stand-in for a slot-odds-weighted average, since real trade volume
     // per slot roughly tracks the same odds naturally.
-    const overall = statsFor(transactions, rarity, null, craftTotal);
+    const overall = statsFor(windowedTx, fullTx, rarity, null, craftTotal);
     return { rarity, craftTotal, ...overall };
   });
 
@@ -490,12 +555,12 @@ function renderRarityGrid(transactions, prices) {
   });
 }
 
-function renderBreakdown(transactions, prices) {
+function renderBreakdown(windowedTx, fullTx, prices) {
   const el = $('#craftBreakdown');
   const craftTotal = craftCostFor(selectedRarity, prices);
 
   const rows = SLOTS.map((slot) => {
-    const s = statsFor(transactions, selectedRarity, slot, craftTotal);
+    const s = statsFor(windowedTx, fullTx, selectedRarity, slot, craftTotal);
     const odds = TYPE_ODDS[slot];
     // Weapon rarity comes from a player-confirmed name→rarity mapping
     // (WEAPON_NAME_TO_RARITY), not a documented API field — flagged
@@ -536,39 +601,33 @@ function renderBreakdown(transactions, prices) {
 }
 
 /**
-/**
- * Shared grid renderer for the stat-roll section — groups matching sales
- * by statKey (a full stat combination: one value for armor, two for
- * weapons — see parseTransaction), averages price per bucket, and shows
- * the diff against a craft cost.
+ * Shared grid renderer for the stat-roll section — one card per stat-roll
+ * combination, delegating bucket construction to getStatBuckets so it
+ * automatically reflects whichever recency mode (time window vs last-N
+ * sales per combination) is currently selected.
  */
-function statRollGridHtml(matches, craftTotal) {
-  const withStat = matches.filter((tx) => tx.statKey !== null);
-  if (withStat.length === 0) return null;
+function statRollGridHtml(windowedMatches, fullMatches, craftTotal) {
+  if (fullMatches.filter((tx) => tx.statKey !== null).length === 0) return null;
 
-  const byKey = new Map(); // statKey -> { label, prices: [] }
-  withStat.forEach((tx) => {
-    if (!byKey.has(tx.statKey)) byKey.set(tx.statKey, { label: tx.statLabel, prices: [] });
-    byKey.get(tx.statKey).prices.push(tx.price);
-  });
-  const rows = [...byKey.entries()]
-    .map(([key, { label, prices: prices2 }]) => {
-      const avg = prices2.reduce((s, p) => s + p, 0) / prices2.length;
-      const diff = craftTotal !== null ? avg - craftTotal : null;
-      return { key, label, count: prices2.length, avg, diff };
-    })
+  const buckets = getStatBuckets(windowedMatches, fullMatches)
+    .map((b) => ({ ...b, diff: craftTotal !== null ? b.avg - craftTotal : null }))
     // Sort by the first number in the label (works for both single-stat
     // "24" and multi-stat "128 / 16" combinations).
     .sort((a, b) => parseFloat(a.label) - parseFloat(b.label));
 
+  const countLabel = (r) =>
+    recencyMode === 'lastN'
+      ? `${r.usedCount} of ${r.totalCount}× used`
+      : `${r.totalCount}× seen${r.isFallback ? ' <span class="stale-tag">older</span>' : ''}`;
+
   return `
     <div class="statroll-grid">
-      ${rows
+      ${buckets
         .map(
           (r) => `
-        <div class="statroll-card">
+        <div class="statroll-card${r.isFallback ? ' statroll-card--stale' : ''}" ${r.isFallback ? 'title="No sale in the selected window — showing this combination\'s most recent known price instead"' : ''}>
           <div class="statroll-card__value">${r.label}</div>
-          <div class="statroll-card__count">${r.count}× seen</div>
+          <div class="statroll-card__count">${countLabel(r)}</div>
           <div class="statroll-card__price">${fmtNum(r.avg)}</div>
           <div class="statroll-card__diff ${r.diff === null ? '' : r.diff >= 0 ? 'up' : 'down'}">${r.diff !== null ? `${r.diff >= 0 ? '+' : ''}${fmtNum(r.diff)} vs craft` : ''}</div>
         </div>
@@ -579,18 +638,22 @@ function statRollGridHtml(matches, craftTotal) {
   `;
 }
 
-function renderStatRollSection(transactions, prices) {
+function renderStatRollSection(windowedTx, fullTx, prices) {
   const el = $('#statrollSection');
   const craftTotal = craftCostFor(selectedRarity, prices);
-  const matches = transactions.filter((tx) => tx.rarity === selectedRarity && tx.slot === selectedStatSlot);
+  const windowedMatches = windowedTx.filter((tx) => tx.rarity === selectedRarity && tx.slot === selectedStatSlot);
+  const fullMatches = fullTx.filter((tx) => tx.rarity === selectedRarity && tx.slot === selectedStatSlot);
 
   const tabs = SLOTS
     .map((slot) => `<button class="statroll-tab ${slot === selectedStatSlot ? 'is-active' : ''}" data-slot="${slot}">${slot}</button>`)
     .join('');
 
-  const grid = statRollGridHtml(matches, craftTotal);
+  const grid = statRollGridHtml(windowedMatches, fullMatches, craftTotal);
   const weaponNote = selectedStatSlot === 'Weapon'
     ? '<p class="breakdown-footnote">Weapon stat rolls combine two values (e.g. attack / crit chance) — each card is one full combination, not a single stat.</p>'
+    : '';
+  const staleNote = grid && grid.includes('statroll-card--stale')
+    ? '<p class="breakdown-footnote">Cards marked "older" had no sale in the selected time window — showing their most recent known price from the full ~24h history instead of hiding them.</p>'
     : '';
 
   el.innerHTML = grid
@@ -601,6 +664,7 @@ function renderStatRollSection(transactions, prices) {
       </div>
       ${grid}
       ${weaponNote}
+      ${staleNote}
     `
     : `
       <div class="statroll-head">
@@ -609,7 +673,7 @@ function renderStatRollSection(transactions, prices) {
       </div>
       <p class="empty-state">
         No stat-roll value found in the transaction data for ${selectedRarity} ${selectedStatSlot}
-        in this window (${matches.length} sale${matches.length === 1 ? '' : 's'} matched, but none carried a
+        in the full ~24h history (${fullMatches.length} sale${fullMatches.length === 1 ? '' : 's'} matched, but none carried a
         recognizable stat field). Check the console log for the raw transaction shape —
         the field name may need adjusting in <code>parseTransaction()</code>, or this
         combo just hasn't traded recently.
@@ -639,14 +703,17 @@ async function renderCraftRoi() {
     materialPriceCache = prices;
     const windowed = withinWindow(allTransactions, craftHoursWindow);
 
-    renderRarityGrid(windowed, prices);
-    renderBreakdown(windowed, prices);
-    renderStatRollSection(windowed, prices);
+    renderRarityGrid(windowed, allTransactions, prices);
+    renderBreakdown(windowed, allTransactions, prices);
+    renderStatRollSection(windowed, allTransactions, prices);
 
     if (craftIngestStatus) {
       const equipCount = allTransactions.length;
+      const modeText = recencyMode === 'lastN'
+        ? `Using each combination's last ${lastNCount} sale${lastNCount === 1 ? '' : 's'}, whenever they happened.`
+        : `Using sales from the last ${craftHoursWindow}h (falls back to older data per combination if the window has none).`;
       const coverage = craftIngestStatus.ingestActive
-        ? `Building up live — ${equipCount} equipment sales collected so far (grows continuously while the server stays running; more after a deploy or wake-up means richer numbers).`
+        ? `Building up live — ${equipCount} equipment sales collected so far. ${modeText}`
         : `Data collection isn't running (check WARERA_API_KEY) — showing whatever was collected before it stopped.`;
       note.textContent = coverage;
     }
@@ -677,9 +744,21 @@ function init() {
   });
   $$('#timeFilter button').forEach((btn) => {
     btn.addEventListener('click', () => {
+      recencyMode = 'window';
+      craftHoursWindow = Number(btn.dataset.hours);
       $$('#timeFilter button').forEach((b) => b.classList.remove('is-active'));
       btn.classList.add('is-active');
-      craftHoursWindow = Number(btn.dataset.hours);
+      $$('#lastNFilter button').forEach((b) => b.classList.remove('is-active'));
+      renderCraftRoi();
+    });
+  });
+  $$('#lastNFilter button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      recencyMode = 'lastN';
+      lastNCount = Number(btn.dataset.lastn);
+      $$('#lastNFilter button').forEach((b) => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      $$('#timeFilter button').forEach((b) => b.classList.remove('is-active'));
       renderCraftRoi();
     });
   });

@@ -103,6 +103,13 @@
     <div class="panel__header">
       <h2>Craft ROI</h2>
       <div class="panel__controls">
+        <button id="craftRefresh" class="btn">Refresh</button>
+      </div>
+    </div>
+
+    <div class="recency-controls">
+      <div class="recency-group">
+        <span class="recency-label">By time window</span>
         <div class="time-filter" id="timeFilter">
           <button data-hours="1">1h</button>
           <button data-hours="2">2h</button>
@@ -111,7 +118,14 @@
           <button data-hours="16">16h</button>
           <button data-hours="24" class="is-active">24h</button>
         </div>
-        <button id="craftRefresh" class="btn">Refresh</button>
+      </div>
+      <div class="recency-group">
+        <span class="recency-label">By last N sales per combo</span>
+        <div class="time-filter" id="lastNFilter">
+          <button data-lastn="1">Last 1</button>
+          <button data-lastn="2">Last 2</button>
+          <button data-lastn="5">Last 5</button>
+        </div>
       </div>
     </div>
 

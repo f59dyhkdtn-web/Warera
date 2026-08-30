@@ -136,7 +136,8 @@ a fraction of it.
 Modeled after community "crafting ROI" trackers: a grid of all 6 rarities showing
 margin %, sample size, and profit odds; click one to see a breakdown by equipment
 slot; below that, average sale price broken down by the item's specific stat roll.
-A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
+A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are —
+with one deliberate exception, see "Recency vs completeness" below.
 
 - **Craft cost**: live, from scraps/steel quantities per rarity (hardcoded, confirmed
   static in-game values) × current scraps/steel prices from `itemTrading.getPrices`.
@@ -181,6 +182,29 @@ A 1h/2h/4h/8h/16h/24h filter re-slices everything by how recent the trades are.
 - Sample-size confidence badges (high/medium/low) use thresholds I picked (100 / 20
   sales) — not a WarEra-published figure, just a reasonable line so a 2-sale average
   isn't shown with the same weight as a 500-sale one.
+
+### Recency vs completeness
+
+Two independent ways to pick which sales feed each stat-roll bucket's average:
+
+- **By time window** (1h/2h/.../24h buttons): for each specific combination, prefers a
+  price from the selected window if one exists, but falls back to that combination's
+  most recent sale in the full ~24h history if the window has none — rather than
+  silently dropping it. Without this, a real but infrequently-traded combination (a
+  top roll that sold once 8 hours ago but not in the last hour) would vanish from the
+  estimate purely because the window missed it, not because it doesn't exist. Cards
+  using a fallback price are marked "older" with a dashed border.
+- **By last N sales per combo** (Last 1 / Last 2 / Last 5 buttons): instead of a
+  shared time window, takes each combination's own N most recent sales, whenever they
+  happened. Two combinations that trade at very different frequencies both get "how
+  has *this one* actually been selling lately" on equal footing — a fixed time window
+  would show a rich sample for a common combo and nothing for a rare one, even though
+  both are equally "current" relative to their own pace. Cards show how many of a
+  combination's sales were actually used (e.g. "2 of 14× used").
+
+Only one mode is active at a time — picking one deselects the other. Both modes feed
+the same underlying calculation, so the rarity cards and breakdown table update to
+match whichever is selected, not just the stat-roll grid.
 
 ## Disclaimer
 
