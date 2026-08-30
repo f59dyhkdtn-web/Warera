@@ -353,6 +353,7 @@ async function fetchCraftHistory() {
   const body = await res.json();
   if (!res.ok || body.ok === false) throw new Error(body.error || 'Failed to load transaction history');
   console.log('craft history status:', { storeSize: body.storeSize, ingestActive: body.ingestActive, typeCounts: body.typeCounts });
+  console.log('item codes collected so far:', body.itemCodeCounts);
   craftIngestStatus = { storeSize: body.storeSize, ingestActive: body.ingestActive, typeCounts: body.typeCounts };
   const raw = asArray(body.data);
   const transactions = raw.map(parseTransaction).filter((tx) => tx !== null && tx.price !== null);
@@ -371,15 +372,42 @@ function craftCostFor(rarity, prices) {
   return cost.scraps * prices.scraps + cost.steel * prices.steel;
 }
 
+/**
+ * Averages price PER specific stat roll first, then averages those
+ * bucket-averages together (unweighted) — a craft has roughly equal odds
+ * of landing on any stat value, so a straight average of raw sales would
+ * be skewed by however the stat-value mix happened to trade recently
+ * (e.g. a run of high-roll sales inflating the "expected" price). Falls
+ * back to a plain average when no stat-roll data is available (currently:
+ * weapon sales — see the "indicative" note elsewhere).
+ */
 function statsFor(transactions, rarity, slot, craftTotal) {
   const matches = transactions.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
   const count = matches.length;
-  const avgPrice = count ? matches.reduce((s, tx) => s + tx.price, 0) / count : null;
+  if (count === 0) return { count: 0, avgPrice: null, marginAbs: null, marginPct: null, pProfit: null };
+
+  const withStat = matches.filter((tx) => tx.statValue !== null);
+  let avgPrice;
+  let pProfit;
+
+  if (withStat.length > 0) {
+    const byValue = new Map();
+    withStat.forEach((tx) => {
+      if (!byValue.has(tx.statValue)) byValue.set(tx.statValue, []);
+      byValue.get(tx.statValue).push(tx.price);
+    });
+    const bucketAverages = [...byValue.values()].map((prices) => prices.reduce((s, p) => s + p, 0) / prices.length);
+    avgPrice = bucketAverages.reduce((s, a) => s + a, 0) / bucketAverages.length;
+    pProfit = craftTotal !== null
+      ? (bucketAverages.filter((a) => a > craftTotal).length / bucketAverages.length) * 100
+      : null;
+  } else {
+    avgPrice = matches.reduce((s, tx) => s + tx.price, 0) / count;
+    pProfit = craftTotal !== null ? (matches.filter((tx) => tx.price > craftTotal).length / count) * 100 : null;
+  }
+
   const marginAbs = avgPrice !== null && craftTotal !== null ? avgPrice - craftTotal : null;
   const marginPct = marginAbs !== null && craftTotal > 0 ? (marginAbs / craftTotal) * 100 : null;
-  const pProfit = craftTotal !== null && count
-    ? (matches.filter((tx) => tx.price > craftTotal).length / count) * 100
-    : null;
   return { count, avgPrice, marginAbs, marginPct, pProfit };
 }
 

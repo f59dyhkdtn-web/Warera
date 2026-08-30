@@ -225,9 +225,12 @@ app.get('/api/craft/history', (req, res) => {
   });
 
   const typeCounts = {};
+  const itemCodeCounts = {}; // diagnostic: every distinct item.code seen — helps spot missing categories (e.g. weapons) at a glance
   windowed.forEach((t) => {
     const key = t.transactionType || '(none)';
     typeCounts[key] = (typeCounts[key] || 0) + 1;
+    const code = t.item?.code || t.itemCode || '(none)';
+    itemCodeCounts[code] = (itemCodeCounts[code] || 0) + 1;
   });
 
   res.json({
@@ -235,6 +238,7 @@ app.get('/api/craft/history', (req, res) => {
     data: windowed,
     storeSize: txStore.size,
     typeCounts,
+    itemCodeCounts,
     ingestFailures,
     ingestActive: ingestFailures <= 3,
   });
