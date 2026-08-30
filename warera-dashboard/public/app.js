@@ -863,6 +863,11 @@ function computeCaseEV(windowedTx, fullTx, materialPrices) {
       if (o.scrapValue === null) return o.sellValue;
       return Math.max(o.sellValue, o.scrapValue);
     }),
+    evDefault: weightedEV((o) => {
+      const choice = DEFAULT_STRATEGY[o.rarity] || 'sell';
+      const preferred = choice === 'scrap' ? o.scrapValue : o.sellValue;
+      return preferred !== null ? preferred : (choice === 'scrap' ? o.sellValue : o.scrapValue);
+    }),
     evCustom: weightedEV((o) => {
       const choice = customStrategy[o.rarity] || 'sell';
       const preferred = choice === 'scrap' ? o.scrapValue : o.sellValue;
@@ -872,8 +877,17 @@ function computeCaseEV(windowedTx, fullTx, materialPrices) {
 }
 
 let caseDataCache = null;
-const customStrategy = {}; // rarity -> 'sell' | 'scrap'
-RARITIES.forEach((r) => { customStrategy[r] = 'sell'; });
+
+// The realistic strategy most players will actually follow — scrapping
+// every single Common/Uncommon by hand for little value each isn't worth
+// the clicks, so this treats those two rarities as "always scrap" and
+// everything above as "always sell". Fixed (not user-editable) — that's
+// what "your strategy" below is for, which starts matching this pattern
+// but can be adjusted per rarity from there.
+const DEFAULT_STRATEGY = { common: 'scrap', uncommon: 'scrap', rare: 'sell', epic: 'sell', legendary: 'sell', mythic: 'sell' };
+
+const customStrategy = {}; // rarity -> 'sell' | 'scrap' — starts as a copy of DEFAULT_STRATEGY, then user-editable
+RARITIES.forEach((r) => { customStrategy[r] = DEFAULT_STRATEGY[r]; });
 // Independent from Craft ROI's own recency controls — you might reasonably
 // want a faster-moving 1h view on Craft ROI while Cases uses a steadier
 // 24h+ window for a "should I buy this" decision, or vice versa.
@@ -903,11 +917,16 @@ function renderCaseCards() {
       const caseCode = row.item;
       const price = row.price;
 
+      // Headline number is the default strategy (scrap Common/Uncommon,
+      // sell the rest) — a realistic ceiling on what you'll actually do,
+      // not the theoretical optimal (which assumes hand-scrapping every
+      // single Common/Uncommon roll, impractical at real volume).
+      const netDefault = ev.evDefault !== null ? ev.evDefault - price : null;
       const netOptimal = ev.evOptimal !== null ? ev.evOptimal - price : null;
       const netSell = ev.evSellAll !== null ? ev.evSellAll - price : null;
       const netScrap = ev.evScrapAll !== null ? ev.evScrapAll - price : null;
       const netCustom = ev.evCustom !== null ? ev.evCustom - price : null;
-      const pct = netOptimal !== null && price > 0 ? (netOptimal / price) * 100 : null;
+      const pct = netDefault !== null && price > 0 ? (netDefault / price) * 100 : null;
 
       return `
         <div class="case-card">
@@ -917,20 +936,21 @@ function renderCaseCards() {
               ? `<span class="case-verdict ${pct >= 0 ? 'case-verdict--good' : 'case-verdict--bad'}">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
               : '<span class="confidence-chip confidence-none">no sell data yet</span>'}
           </div>
-          <div class="case-card__verdict-label ${netOptimal === null ? '' : netOptimal >= 0 ? 'up' : 'down'}">
-            ${netOptimal === null ? 'Not enough sell data yet' : netOptimal >= 0 ? 'Opening pays off' : "Don't open"}
+          <div class="case-card__verdict-label ${netDefault === null ? '' : netDefault >= 0 ? 'up' : 'down'}">
+            ${netDefault === null ? 'Not enough sell data yet' : netDefault >= 0 ? 'Opening pays off' : "Don't open"}
           </div>
           <div class="case-card__stats">
             <div><span class="case-stat__label">Price</span><span class="case-stat__value">${fmtNum(price)}</span></div>
-            <div><span class="case-stat__label">EV optimal</span><span class="case-stat__value">${ev.evOptimal !== null ? fmtNum(ev.evOptimal) : '—'}</span></div>
-            <div><span class="case-stat__label">Net</span><span class="case-stat__value ${netOptimal === null ? '' : netOptimal >= 0 ? 'up' : 'down'}">${netOptimal !== null ? `${netOptimal >= 0 ? '+' : ''}${fmtNum(netOptimal)}` : '—'}</span></div>
+            <div><span class="case-stat__label">EV (default)</span><span class="case-stat__value">${ev.evDefault !== null ? fmtNum(ev.evDefault) : '—'}</span></div>
+            <div><span class="case-stat__label">Net</span><span class="case-stat__value ${netDefault === null ? '' : netDefault >= 0 ? 'up' : 'down'}">${netDefault !== null ? `${netDefault >= 0 ? '+' : ''}${fmtNum(netDefault)}` : '—'}</span></div>
           </div>
           <table class="case-strategy-table">
             <tbody>
               ${caseStrategyRow("Sell case (don't open)", price, null, false)}
               ${caseStrategyRow('Open → sell everything', ev.evSellAll, netSell, false)}
               ${caseStrategyRow('Open → scrap everything', ev.evScrapAll, netScrap, false)}
-              ${caseStrategyRow('Open → optimal (max sell/scrap)', ev.evOptimal, netOptimal, true)}
+              ${caseStrategyRow('Open → default (scrap C/U, sell rest)', ev.evDefault, netDefault, true)}
+              ${caseStrategyRow('Open → optimal (max sell/scrap)', ev.evOptimal, netOptimal, false)}
               ${caseStrategyRow('Open → your strategy', ev.evCustom, netCustom, false)}
             </tbody>
           </table>

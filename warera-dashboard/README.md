@@ -282,9 +282,16 @@ scrap everything / optimal / your strategy" comparison the reference community t
   the console — not required for the tab to show real numbers, since odds and scrap
   value come from the confirmed formulas above instead. Could be used later as a
   cross-check against the formulas if useful.
-- **The custom-strategy panel** (sell vs scrap per rarity) defaults to "sell" for
-  every rarity — pick per rarity and both case cards' "your strategy" row updates
-  live from the same already-collected data, no refetch.
+- **Headline % and verdict use the "default" strategy, not "optimal".** `DEFAULT_STRATEGY`
+  (fixed: scrap Common/Uncommon, sell everything else) is the realistic ceiling on
+  what someone will actually do — the theoretical "optimal" (max of sell/scrap per
+  outcome) assumes hand-scrapping every single Common/Uncommon roll individually,
+  impractical at real volume, so it's shown as a plain reference row instead of the
+  headline number.
+- **The custom-strategy panel** (sell vs scrap per rarity) starts pre-filled to match
+  `DEFAULT_STRATEGY` rather than all-"sell" — adjust per rarity from there, and both
+  case cards' "your strategy" row updates live from the same already-collected data,
+  no refetch.
 
 ## Disclaimer
 
