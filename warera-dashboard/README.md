@@ -240,17 +240,49 @@ Only one mode is active at a time — picking one deselects the other. Both mode
 the same underlying calculation, so the rarity cards and breakdown table update to
 match whichever is selected, not just the stat-roll grid.
 
+### Interpolation for missing stat-roll combinations
+
+A different gap from the one above: even with recency handled, a *specific* stat-roll
+combination might simply never have sold at all within the whole retention window
+(e.g. a particular jet attack/crit pairing, if jets trade rarely). `interpolateStatBuckets()`
+fills these by linearly interpolating between the two nearest *real* observed
+combinations — but only within the same secondary stat value (e.g. only across attack
+values that share the same crit chance for weapons; the whole set for single-stat
+armor, which has no secondary axis) — and only strictly between two observed points,
+never extrapolating beyond the lowest/highest value actually seen for that secondary
+value. Interpolated cards are visibly marked ("interpolated", dotted blue border,
+zero sample count) so they're never mistaken for a real sale. This feeds into the same
+bucket-averaging used everywhere (rarity cards, breakdown table, Cases), so its effect
+isn't limited to the stat-roll grid.
+
+**What this does NOT solve:** if a whole rarity+slot has zero sales at all in the
+entire retention window (not just one missing combination, but nothing to interpolate
+between), that outcome is still excluded from calculations entirely rather than
+estimated — see `weightedEV()` in the Cases section below.
+
 **"Sales" counts intentionally don't change between 1h/2h/.../24h** — that number is
-always the full ~24h collected total for that row, since a tiny window's sample would
-make the confidence badges misleading. What *does* change with the selected mode is
-how many of those sales actually fed the displayed price — shown as "X used" next to
-the count on rarity cards, and as "24h total / used" in the breakdown table.
+always the full 7-day collected total for that row, since a tiny window's sample would
+make the confidence badges misleading. **"Used" is real sales within your selected
+window, full stop** — it can only grow (or stay the same) as you widen the window,
+never shrink. An earlier version summed each stat-roll combination's own fallback
+count instead (a combination with zero in-window sales pulls in its whole 7-day count
+just to compute a price) — that made *narrower* windows show a *bigger* "used" number
+whenever more combinations needed to fall back, which was backwards and confusing.
+"Last N" mode uses a different, still-correct formula for the same reason (there's no
+shared window to measure against in that mode) — see `statsFor()` in `app.js`.
 
 ## Cases tab
 
 Compares buying/opening a case against just reselling it — same "sell everything /
 scrap everything / optimal / your strategy" comparison the reference community tool
 (the same one Craft ROI was modeled after) uses for this.
+
+**Known gap**: if one of the 36 rarity+slot outcomes has zero sales at all across the
+whole retention window, `weightedEV()` excludes it from the EV calculation entirely
+and renormalizes probability across the remaining outcomes — it does not estimate a
+value for it, since interpolation (see above) needs at least two real points to work
+from and there's nothing to interpolate when a whole outcome has no data. This is
+currently silent — no on-screen warning when it happens.
 
 - **Case prices/SKUs are auto-discovered, not hardcoded.** `discoverCasePrices()`
   scans `itemTrading.getPrices`' response for any key containing "case" — confirmed

@@ -748,6 +748,17 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
   font-style: italic;
 }
 
+.statroll-card--interp {
+  border-style: dotted;
+  border-color: #5c9bd6;
+  opacity: 0.8;
+}
+
+.interp-tag {
+  color: #5c9bd6;
+  font-style: italic;
+}
+
 .statroll-card__value {
   font-family: var(--display);
   font-size: 16px;

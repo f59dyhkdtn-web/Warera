@@ -295,6 +295,14 @@ function parseTransaction(tx) {
     price: Number.isFinite(price) ? price : null,
     statKey,
     statLabel,
+    // Raw numeric values in the same sorted order as statKey/statLabel —
+    // e.g. [128, 16] for a weapon (attack, criticalChance) or [24] for
+    // armor. Used for interpolating gaps between observed stat rolls:
+    // skillValues[0] is the "primary" axis to interpolate along,
+    // skillValues[1] (if present) is the "secondary" axis to group by
+    // (interpolation only happens within the same secondary value, e.g.
+    // same crit chance — never across it).
+    skillValues: skillEntries.map(([, v]) => Number(v)),
     timestampMs: Number.isFinite(timestampMs) ? timestampMs : null,
   };
 }
@@ -425,10 +433,10 @@ function craftCostFor(rarity, prices) {
  * it's rare, but because the window happened to miss it.
  */
 function buildStatBuckets(windowedMatches, fullMatches) {
-  const fullByKey = new Map(); // statKey -> { label, prices: [] }
+  const fullByKey = new Map(); // statKey -> { label, skillValues, prices: [] }
   fullMatches.forEach((tx) => {
     if (tx.statKey === null) return;
-    if (!fullByKey.has(tx.statKey)) fullByKey.set(tx.statKey, { label: tx.statLabel, prices: [], recentPrices: [] });
+    if (!fullByKey.has(tx.statKey)) fullByKey.set(tx.statKey, { label: tx.statLabel, skillValues: tx.skillValues, prices: [], recentPrices: [] });
     fullByKey.get(tx.statKey).prices.push(tx.price);
   });
   windowedMatches.forEach((tx) => {
@@ -436,10 +444,14 @@ function buildStatBuckets(windowedMatches, fullMatches) {
     fullByKey.get(tx.statKey).recentPrices.push(tx.price);
   });
 
-  return [...fullByKey.entries()].map(([key, { label, prices, recentPrices }]) => {
+  return [...fullByKey.entries()].map(([key, { label, skillValues, prices, recentPrices }]) => {
     const usedPrices = recentPrices.length > 0 ? recentPrices : prices;
     const avg = usedPrices.reduce((s, p) => s + p, 0) / usedPrices.length;
-    return { key, label, avg, totalCount: prices.length, usedCount: usedPrices.length, isFallback: recentPrices.length === 0 };
+    return {
+      key, label, skillValues, avg,
+      totalCount: prices.length, usedCount: usedPrices.length,
+      isFallback: recentPrices.length === 0, isInterpolated: false,
+    };
   });
 }
 
@@ -453,28 +465,84 @@ function buildStatBuckets(windowedMatches, fullMatches) {
  * other, even though both are equally "current" for their own frequency.
  */
 function buildStatBucketsLastN(fullMatches, n) {
-  const byKey = new Map(); // statKey -> { label, txs: [] }
+  const byKey = new Map(); // statKey -> { label, skillValues, txs: [] }
   fullMatches.forEach((tx) => {
     if (tx.statKey === null) return;
-    if (!byKey.has(tx.statKey)) byKey.set(tx.statKey, { label: tx.statLabel, txs: [] });
+    if (!byKey.has(tx.statKey)) byKey.set(tx.statKey, { label: tx.statLabel, skillValues: tx.skillValues, txs: [] });
     byKey.get(tx.statKey).txs.push(tx);
   });
 
-  return [...byKey.entries()].map(([key, { label, txs }]) => {
+  return [...byKey.entries()].map(([key, { label, skillValues, txs }]) => {
     const sorted = [...txs].sort((a, b) => (b.timestampMs ?? 0) - (a.timestampMs ?? 0));
     const used = sorted.slice(0, n);
     const avg = used.reduce((s, tx) => s + tx.price, 0) / used.length;
-    return { key, label, avg, totalCount: txs.length, usedCount: used.length, isFallback: false };
+    return {
+      key, label, skillValues, avg,
+      totalCount: txs.length, usedCount: used.length,
+      isFallback: false, isInterpolated: false,
+    };
   });
 }
 
-// Dispatches to whichever recency mode is currently selected — everything
-// downstream (rarity cards, breakdown table, stat-roll grid) reads
-// through this, so switching modes updates all of them consistently.
+/**
+ * Fills gaps between observed stat-roll combinations via linear
+ * interpolation — ONLY within the same secondary stat value (e.g. only
+ * across attack values that share the same crit chance; the whole set
+ * for single-stat armor, which has no secondary axis), and ONLY between
+ * two real observed points on that same line — never extrapolating
+ * beyond the lowest/highest value actually seen for that secondary
+ * value. Interpolated entries are clearly flagged (isInterpolated: true,
+ * zero sample count) so they're never mistaken for a real sale.
+ */
+function interpolateStatBuckets(buckets) {
+  const withValues = buckets.filter((b) => b.skillValues && b.skillValues.length > 0);
+  if (withValues.length === 0) return buckets;
+
+  const groups = new Map(); // groupKey (secondary value, or "single") -> bucket[]
+  withValues.forEach((b) => {
+    const groupKey = b.skillValues.length > 1 ? JSON.stringify(b.skillValues.slice(1)) : 'single';
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push(b);
+  });
+
+  const interpolated = [];
+  groups.forEach((group) => {
+    const sorted = [...group].sort((a, b) => a.skillValues[0] - b.skillValues[0]);
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i];
+      const b = sorted[i + 1];
+      const gap = b.skillValues[0] - a.skillValues[0];
+      if (gap <= 1) continue; // adjacent already, nothing missing between them
+      for (let v = a.skillValues[0] + 1; v < b.skillValues[0]; v++) {
+        const t = (v - a.skillValues[0]) / gap;
+        const avg = a.avg + (b.avg - a.avg) * t;
+        const skillValues = [v, ...a.skillValues.slice(1)];
+        interpolated.push({
+          key: `interp:${skillValues.join('|')}`,
+          label: skillValues.join(' / '),
+          skillValues,
+          avg,
+          totalCount: 0,
+          usedCount: 0,
+          isFallback: false,
+          isInterpolated: true,
+        });
+      }
+    }
+  });
+
+  return [...buckets, ...interpolated];
+}
+
+// Dispatches to whichever recency mode is currently selected, then fills
+// gaps via interpolation — everything downstream (rarity cards, breakdown
+// table, stat-roll grid, Cases) reads through this, so both the mode and
+// the interpolation apply consistently everywhere.
 function getStatBuckets(windowedMatches, fullMatches) {
-  return recencyMode === 'lastN'
+  const buckets = recencyMode === 'lastN'
     ? buildStatBucketsLastN(fullMatches, lastNCount)
     : buildStatBuckets(windowedMatches, fullMatches);
+  return interpolateStatBuckets(buckets);
 }
 
 function statsFor(windowedTx, fullTx, rarity, slot, craftTotal) {
@@ -494,18 +562,29 @@ function statsFor(windowedTx, fullTx, rarity, slot, craftTotal) {
     pProfit = craftTotal !== null
       ? (buckets.filter((b) => b.avg > craftTotal).length / buckets.length) * 100
       : null;
-    // How many individual sales actually fed the price above — as
-    // opposed to `count`, which is every sale ever collected for this
-    // row regardless of whether it was used (see the "sales" vs "used"
-    // distinction surfaced in the UI).
-    usedCount = buckets.reduce((s, b) => s + b.usedCount, 0);
+    // "Used" needs different logic per recency mode, not one formula:
+    //  - 'window' mode: real sales within the selected window, full stop
+    //    (windowedMatches.length). NOT summed from per-bucket counts —
+    //    a bucket with zero in-window sales falls back to its whole
+    //    7-day count for PRICING purposes, and summing that per bucket
+    //    made narrower windows show a BIGGER "used" number than wider
+    //    ones whenever more buckets needed to fall back — backwards.
+    //  - 'lastN' mode: there's no shared window to measure against (the
+    //    windowed dataset here is leftover/stale from whatever the time
+    //    window buttons were last set to, irrelevant in this mode) — sum
+    //    each bucket's own min(N, real count) instead, which doesn't
+    //    have the fallback-inflation problem since lastN buckets never
+    //    silently swap in a different sample.
+    usedCount = recencyMode === 'lastN'
+      ? buckets.reduce((s, b) => s + b.usedCount, 0)
+      : windowedMatches.length;
   } else {
     // No stat-roll data at all for this slot — fall back to a plain
     // average, preferring the recency window if it has any sales.
     const priceSource = windowedMatches.length > 0 ? windowedMatches : fullMatches;
     avgPrice = priceSource.reduce((s, tx) => s + tx.price, 0) / priceSource.length;
     pProfit = craftTotal !== null ? (priceSource.filter((tx) => tx.price > craftTotal).length / priceSource.length) * 100 : null;
-    usedCount = priceSource.length;
+    usedCount = recencyMode === 'lastN' ? Math.min(lastNCount, priceSource.length) : windowedMatches.length;
   }
 
   const marginAbs = avgPrice !== null && craftTotal !== null ? avgPrice - craftTotal : null;
@@ -659,17 +738,19 @@ function statRollGridHtml(windowedMatches, fullMatches, craftTotal) {
     // "24" and multi-stat "128 / 16" combinations).
     .sort((a, b) => parseFloat(a.label) - parseFloat(b.label));
 
-  const countLabel = (r) =>
-    recencyMode === 'lastN'
+  const countLabel = (r) => {
+    if (r.isInterpolated) return '<span class="interp-tag">interpolated</span>';
+    return recencyMode === 'lastN'
       ? `${r.usedCount} of ${r.totalCount}× used`
       : `${r.totalCount}× seen${r.isFallback ? ' <span class="stale-tag">older</span>' : ''}`;
+  };
 
   return `
     <div class="statroll-grid">
       ${buckets
         .map(
           (r) => `
-        <div class="statroll-card${r.isFallback ? ' statroll-card--stale' : ''}" ${r.isFallback ? 'title="No sale in the selected window — showing this combination\'s most recent known price instead"' : ''}>
+        <div class="statroll-card${r.isFallback ? ' statroll-card--stale' : ''}${r.isInterpolated ? ' statroll-card--interp' : ''}" ${r.isFallback ? 'title="No sale in the selected window — showing this combination\'s most recent known price instead"' : ''}${r.isInterpolated ? ' title="No real sale for this exact combination — estimated by interpolating between neighboring combinations with the same secondary stat (e.g. same crit chance)"' : ''}>
           <div class="statroll-card__value">${r.label}</div>
           <div class="statroll-card__count">${countLabel(r)}</div>
           <div class="statroll-card__price">${fmtNum(r.avg)}</div>
@@ -699,6 +780,9 @@ function renderStatRollSection(windowedTx, fullTx, prices) {
   const staleNote = grid && grid.includes('statroll-card--stale')
     ? '<p class="breakdown-footnote">Cards marked "older" had no sale in the selected time window — showing their most recent known price from the full collected history (up to 7 days) instead of hiding them.</p>'
     : '';
+  const interpNote = grid && grid.includes('statroll-card--interp')
+    ? '<p class="breakdown-footnote">Cards marked "interpolated" had no real sale at all — estimated by linearly interpolating between the nearest observed combinations that share the same secondary stat (e.g. same crit chance for weapons), never guessed across it.</p>'
+    : '';
 
   el.innerHTML = grid
     ? `
@@ -709,6 +793,7 @@ function renderStatRollSection(windowedTx, fullTx, prices) {
       ${grid}
       ${weaponNote}
       ${staleNote}
+      ${interpNote}
     `
     : `
       <div class="statroll-head">
@@ -974,7 +1059,7 @@ function renderCaseCards() {
               ${caseStrategyRow('Open → your strategy', ev.evCustom, netCustom, false)}
             </tbody>
           </table>
-          <p class="case-sample-note">Odds and scrap value: confirmed in-game formulas, scraps priced at Bid (what you'd realize selling them)${scrapyardLevel > 0 ? `, Scrapyard lvl ${scrapyardLevel}: +${scrapyardLevel}% scraps applied` : ', no Scrapyard bonus'}. Sell values: ${sellSampleTotal} real equipment sales from the last ${casesHoursWindow}h (falls back further back per outcome if the window has none) across all 36 outcomes.</p>
+          <p class="case-sample-note">Odds and scrap value: confirmed in-game formulas, scraps priced at Bid (what you'd realize selling them)${scrapyardLevel > 0 ? `, Scrapyard lvl ${scrapyardLevel}: +${scrapyardLevel}% scraps applied` : ', no Scrapyard bonus'}. Sell values: ${sellSampleTotal} real equipment sales from the last ${casesHoursWindow}h (falls back further back per outcome if the window has none), gaps between observed stat rolls filled by interpolation within the same secondary stat — across all 36 outcomes.</p>
         </div>
       `;
     })
