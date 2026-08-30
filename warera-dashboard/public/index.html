@@ -23,16 +23,16 @@
 </header>
 
 <nav class="tabs" id="tabs">
-  <button class="tab is-active" data-tab="market">Market</button>
+  <button class="tab" data-tab="market">Market</button>
   <button class="tab" data-tab="rankings">Rankings</button>
   <button class="tab" data-tab="battles">Battles</button>
-  <button class="tab" data-tab="craft">Craft ROI</button>
+  <button class="tab is-active" data-tab="craft">Craft ROI</button>
 </nav>
 
 <main class="panels">
 
   <!-- MARKET -->
-  <section class="panel is-active" id="panel-market">
+  <section class="panel" id="panel-market">
     <div class="panel__header">
       <h2>Item Trading Post</h2>
       <div class="panel__controls">
@@ -99,7 +99,7 @@
   </section>
 
   <!-- CRAFT ROI -->
-  <section class="panel" id="panel-craft">
+  <section class="panel is-active" id="panel-craft">
     <div class="panel__header">
       <h2>Craft ROI</h2>
       <div class="panel__controls">
@@ -125,6 +125,14 @@
           <button data-lastn="1">Last 1</button>
           <button data-lastn="2">Last 2</button>
           <button data-lastn="5">Last 5</button>
+        </div>
+      </div>
+      <div class="recency-group">
+        <span class="recency-label">Material prices (blank = live)</span>
+        <div class="price-override-group">
+          <label>Scraps <input type="number" id="scrapsOverride" step="0.001" placeholder="live" /></label>
+          <label>Steel <input type="number" id="steelOverride" step="0.001" placeholder="live" /></label>
+          <button id="clearOverrides" class="btn btn--sm">Reset to live</button>
         </div>
       </div>
     </div>

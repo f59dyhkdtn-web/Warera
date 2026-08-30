@@ -278,7 +278,6 @@ const WEAPON_NAME_TO_RARITY = {
 // with the same weight as a 500-sale one.
 const CONFIDENCE = { high: 100, medium: 20 };
 
-let materialPriceCache = null;
 let craftHistoryCache = null; // { fetchedAt, hours, transactions: parsed[] }
 let craftHoursWindow = 24;
 // Two independent ways to pick which sales feed each stat-roll bucket's
@@ -289,6 +288,10 @@ let recencyMode = 'window';
 let lastNCount = 2;
 let selectedRarity = 'epic';
 let selectedStatSlot = 'Chest';
+// null = use the live price fetched below; a number = manual override,
+// entered via the inputs in the Craft ROI panel.
+let scrapsPriceOverride = null;
+let steelPriceOverride = null;
 
 async function getMaterialPrices() {
   const data = await api('/api/market/prices');
@@ -398,8 +401,10 @@ function withinWindow(transactions, hours) {
 
 function craftCostFor(rarity, prices) {
   const cost = CRAFT_COST[rarity];
-  if (!Number.isFinite(prices.scraps) || !Number.isFinite(prices.steel)) return null;
-  return cost.scraps * prices.scraps + cost.steel * prices.steel;
+  const scrapsPrice = Number.isFinite(scrapsPriceOverride) ? scrapsPriceOverride : prices.scraps;
+  const steelPrice = Number.isFinite(steelPriceOverride) ? steelPriceOverride : prices.steel;
+  if (!Number.isFinite(scrapsPrice) || !Number.isFinite(steelPrice)) return null;
+  return cost.scraps * scrapsPrice + cost.steel * steelPrice;
 }
 
 /**
@@ -734,10 +739,9 @@ async function renderCraftRoi() {
 
   try {
     const [prices, allTransactions] = await Promise.all([
-      materialPriceCache ?? getMaterialPrices(),
+      getMaterialPrices(), // always fresh — server caches this itself for 30s, so no staleness risk from calling it every render
       fetchCraftHistory(),
     ]);
-    materialPriceCache = prices;
     const windowed = withinWindow(allTransactions, craftHoursWindow);
 
     renderRarityGrid(windowed, allTransactions, prices);
@@ -749,8 +753,12 @@ async function renderCraftRoi() {
       const modeText = recencyMode === 'lastN'
         ? `Using each combination's last ${lastNCount} sale${lastNCount === 1 ? '' : 's'}, whenever they happened.`
         : `Using sales from the last ${craftHoursWindow}h (falls back to older data per combination if the window has none).`;
+      const overrideParts = [];
+      if (Number.isFinite(scrapsPriceOverride)) overrideParts.push(`scraps @ ${fmtNum(scrapsPriceOverride)}`);
+      if (Number.isFinite(steelPriceOverride)) overrideParts.push(`steel @ ${fmtNum(steelPriceOverride)}`);
+      const overrideText = overrideParts.length ? ` Using manual price for ${overrideParts.join(' and ')} (not live).` : '';
       const coverage = craftIngestStatus.ingestActive
-        ? `Building up live — ${equipCount} equipment sales collected so far. ${modeText}`
+        ? `Building up live — ${equipCount} equipment sales collected so far. ${modeText}${overrideText}`
         : `Data collection isn't running (check WARERA_API_KEY) — showing whatever was collected before it stopped.`;
       note.textContent = coverage;
     }
@@ -798,6 +806,24 @@ function init() {
       $$('#timeFilter button').forEach((b) => b.classList.remove('is-active'));
       renderCraftRoi();
     });
+  });
+
+  $('#scrapsOverride').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    scrapsPriceOverride = Number.isFinite(v) ? v : null;
+    renderCraftRoi();
+  });
+  $('#steelOverride').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    steelPriceOverride = Number.isFinite(v) ? v : null;
+    renderCraftRoi();
+  });
+  $('#clearOverrides').addEventListener('click', () => {
+    scrapsPriceOverride = null;
+    steelPriceOverride = null;
+    $('#scrapsOverride').value = '';
+    $('#steelOverride').value = '';
+    renderCraftRoi();
   });
 
   loadMarket();
