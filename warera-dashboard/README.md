@@ -364,11 +364,23 @@ sampling of the whole game.
   sales specifically, assumed (not independently verified) for other types** like
   wages or donations, since they share the identical `buyerId`/`sellerId` shape but
   haven't been checked one-by-one the way item sales were.
-- **Crafting, Dismantling, and Case Opening show counts only, no cash figures** —
+- **Crafting, Dismantling, and Case Opening show counts only in the by-type table** —
   those records don't carry a `money` field (they're material/loot events, not
-  currency transfers), so this tab is honest about that rather than inventing a
-  monetary value for them. Correlating their real cost/value against Craft ROI's or
-  Cases' pricing data would be a reasonable future extension, not attempted yet.
+  currency transfers). **But crafting IS now connected to its eventual sale**, via the
+  "Craft → Sell chains" section — see below.
+- **Craft → Sell chain-following, using each item's own persistent ID.** Confirmed via
+  live console inspection (not assumed): a crafted item has its own `_id`, separate
+  from the transaction's `_id`, that stays stable through its lifetime — appearing
+  again in whichever `itemMarket` sale or `dismantleItem` record eventually happens to
+  it. `linkCraftLifecycles()` in `app.js` groups the (confirmed real) multiple
+  `craftItem` records a single craft produces — one per material consumed, e.g. one
+  for scraps and one for steel, all sharing the same item ID — into one total
+  material cost per item, then looks for a later sale or dismantle sharing that same
+  ID. Items with both ends of the chain inside the fetched window get a real per-item
+  profit figure; items crafted but not yet resolved show as "still held" (cost known,
+  outcome pending) rather than being silently dropped or guessed at. Material cost
+  uses today's live scraps/steel price, not the price actually paid at crafting time
+  (not tracked) — an approximation for older crafts, noted as such in the UI.
 - **Persisted per user (if Upstash is configured), with incremental refresh.** First
   load for a new user has to page through their full requested history — unavoidably
   slow. Every load after that only fetches transactions newer than what's already

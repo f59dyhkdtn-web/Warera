@@ -654,6 +654,14 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
   margin: 0 0 10px;
 }
 
+.breakdown-head-title {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 20px 0 4px;
+}
+
 .indicative-tag {
   font-family: var(--mono);
   font-size: 9px;

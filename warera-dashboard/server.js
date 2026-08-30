@@ -179,6 +179,13 @@ let ingestCursor; // undefined = "start from the newest page"
 let ingestTicksSinceResync = 0;
 const RESYNC_EVERY_TICKS = 200; // periodically re-check the newest page so brand-new trades aren't missed
 let ingestFailures = 0;
+// Set to true for the duration of an on-demand My ROI fetch — the
+// background collector skips its ticks entirely while this is set,
+// giving the on-demand request the full rate budget instead of just a
+// fixed slice of it. Restoring priority order: a real user waiting on a
+// button click matters more than the background collector's steady
+// drip, which can afford to pause briefly.
+let onDemandPriority = false;
 
 async function ingestTick() {
   try {
@@ -255,6 +262,7 @@ async function startIngestion() {
     // Back off when failing repeatedly (e.g. no WARERA_API_KEY set yet)
     // instead of hammering the API/logs every tick.
     if (ingestFailures > 3 && ingestFailures % 10 !== 0) return;
+    if (onDemandPriority) return; // an on-demand request is running — let it have the budget
     ingestTick();
   }, INGEST_INTERVAL_MS);
   ingestTick();
@@ -368,6 +376,7 @@ app.get('/api/my/transactions', async (req, res) => {
     return res.json({ ok: true, data: cached.data, cached: true });
   }
 
+  onDemandPriority = true;
   try {
     const existing = await loadMyTxSnapshot(userId); // [] if nothing persisted yet for this user
     const existingIds = new Set(existing.map((t) => t._id).filter(Boolean));
@@ -420,6 +429,8 @@ app.get('/api/my/transactions', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(502).json({ ok: false, error: err.message });
+  } finally {
+    onDemandPriority = false;
   }
 });
 
