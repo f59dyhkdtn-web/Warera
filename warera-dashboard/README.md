@@ -141,6 +141,12 @@ with one deliberate exception, see "Recency vs completeness" below.
 
 - **Craft cost**: live, from scraps/steel quantities per rarity (hardcoded, confirmed
   static in-game values) × current scraps/steel prices from `itemTrading.getPrices`.
+- **Each rarity's overall figure is odds-weighted across slots (30% Weapon / 14% each
+  armor piece), not a pool of raw sale counts.** Armor sells far more often than
+  weapons on the open market (confirmed, not assumed) — an unweighted pool of
+  individual sales would let armor's margin dominate and drown out weapon's true 30%
+  share of what a craft actually produces. `weightedSlotCombine()` in `app.js` handles
+  this; slots with zero sample are excluded and the remaining odds renormalized.
 - **Sale data comes from a continuously-running background collector, not a
   per-request fetch.** This API has no working server-side filter — `transactionType`
   and `limit` are both silently ignored (confirmed via `/api/craft/debug`), returning
@@ -167,7 +173,7 @@ with one deliberate exception, see "Recency vs completeness" below.
   `item: { code: "helmet4", skills: {...} }` — `helmet4`'s digit (1–6) matches
   common→mythic order for armor. Price is `money` divided by `quantity`.
 - **Weapon rarity comes from a player-confirmed name→rarity mapping**
-  (`WEAPON_NAME_TO_RARITY` in `app.js`: knife=common, rifle=uncommon, gun=rare,
+  (`WEAPON_NAME_TO_RARITY` in `app.js`: knife=common, gun=uncommon, rifle=rare,
   sniper=epic, tank=legendary, jet=mythic) — each weapon name is its own rarity
   tier, the same way armor has one piece per slot+digit. This isn't a documented API
   field like armor's digit suffix is; it's what the person running this confirmed

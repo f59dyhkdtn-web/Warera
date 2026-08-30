@@ -266,8 +266,8 @@ const SLOTS = Object.keys(TYPE_ODDS);
 // that isn't in this map, its rarity is left unknown rather than guessed.
 const WEAPON_NAME_TO_RARITY = {
   knife: 'common',
-  rifle: 'uncommon',
-  gun: 'rare',
+  gun: 'uncommon',
+  rifle: 'rare',
   sniper: 'epic',
   tank: 'legendary',
   jet: 'mythic',
@@ -506,15 +506,44 @@ function confidenceLabel(count) {
   return { label: 'no data', cls: 'none' };
 }
 
+/**
+ * Combines per-slot stats into one rarity-level figure, weighted by each
+ * slot's real Case odds (30% Weapon, 14% each armor piece) — NOT by
+ * pooling raw sale counts together. Armor sells far more often than
+ * weapons on the open market (confirmed against real usage, not assumed),
+ * so an unweighted pool of individual sales would let armor's margin
+ * drown out weapon's true 30% share of what a craft actually produces.
+ * Slots with zero sample are excluded and the remaining odds renormalized,
+ * rather than treating a missing slot as zero.
+ */
+function weightedSlotCombine(slotStats) {
+  const withData = slotStats.filter((s) => s.avgPrice !== null);
+  const totalCount = slotStats.reduce((sum, s) => sum + s.count, 0);
+  if (withData.length === 0) return { count: totalCount, avgPrice: null, pProfit: null };
+
+  const totalOdds = withData.reduce((sum, s) => sum + s.odds, 0);
+  const avgPrice = withData.reduce((sum, s) => sum + s.avgPrice * s.odds, 0) / totalOdds;
+
+  const withProfit = withData.filter((s) => s.pProfit !== null);
+  const pProfit = withProfit.length > 0
+    ? withProfit.reduce((sum, s) => sum + s.pProfit * s.odds, 0) / withProfit.reduce((sum, s) => sum + s.odds, 0)
+    : null;
+
+  return { count: totalCount, avgPrice, pProfit };
+}
+
 function renderRarityGrid(windowedTx, fullTx, prices) {
   const grid = $('#rarityGrid');
   const perRarity = RARITIES.map((rarity) => {
     const craftTotal = craftCostFor(rarity, prices);
-    // Pools every sale of this rarity across all slots — a reasonable
-    // stand-in for a slot-odds-weighted average, since real trade volume
-    // per slot roughly tracks the same odds naturally.
-    const overall = statsFor(windowedTx, fullTx, rarity, null, craftTotal);
-    return { rarity, craftTotal, ...overall };
+    const slotStats = SLOTS.map((slot) => ({
+      odds: TYPE_ODDS[slot],
+      ...statsFor(windowedTx, fullTx, rarity, slot, craftTotal),
+    }));
+    const overall = weightedSlotCombine(slotStats);
+    const marginAbs = overall.avgPrice !== null && craftTotal !== null ? overall.avgPrice - craftTotal : null;
+    const marginPct = marginAbs !== null && craftTotal > 0 ? (marginAbs / craftTotal) * 100 : null;
+    return { rarity, craftTotal, ...overall, marginAbs, marginPct };
   });
 
   const best = perRarity
