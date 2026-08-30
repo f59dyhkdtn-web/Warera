@@ -304,7 +304,12 @@ const ARMOR_CODE_TO_SLOT = { helmet: 'Helmet', chest: 'Chest', boots: 'Boots', g
  */
 function parseTransaction(tx) {
   if (tx.transactionType !== 'itemMarket') return null;
-  if (!tx.item || tx.item.type !== 'equipment') return null;
+  // Not requiring tx.item.type === 'equipment' specifically — real data
+  // showed weapon sales vanishing under that check despite confirmed high
+  // real volume, while every armor category came through fine. A nested
+  // item object with a code is enough to know it's gear (armor or weapon)
+  // rather than a raw-material trade, without assuming an exact type string.
+  if (!tx.item || !tx.item.code) return null;
 
   const itemCode = String(tx.item.code ?? tx.itemCode ?? '');
   const quantity = Number(tx.quantity) || 1;

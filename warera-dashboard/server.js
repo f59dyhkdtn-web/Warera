@@ -152,8 +152,18 @@ async function ingestTick() {
     // parseTransaction in app.js) — filtering here, not just on read,
     // means wages/case-openings/dismantles/material-trades (~90% of raw
     // volume) never occupy memory or persistence space at all.
+    //
+    // NOT checking item.type === 'equipment' specifically anymore: real
+    // data showed zero weapon sales ever collected despite confirmed high
+    // real volume, while every armor category was well represented — the
+    // likely cause is weapons using a different type string internally
+    // (e.g. "weapon" as its own category, not "equipment"). Requiring
+    // just a nested item object with a code is enough to distinguish gear
+    // sales (armor OR weapons) from raw-material trades, which have no
+    // nested item object at all — without needing to know every exact
+    // type string in advance.
     for (const item of items) {
-      if (item && item._id && item.transactionType === 'itemMarket' && item.item?.type === 'equipment') {
+      if (item && item._id && item.transactionType === 'itemMarket' && item.item?.code) {
         txStore.set(item._id, item);
       }
     }
