@@ -782,7 +782,19 @@ async function renderCraftRoi() {
 async function discoverCasePrices() {
   const data = await api('/api/market/prices');
   const rows = marketRowsFrom(data);
-  return rows.filter((r) => r.item.toLowerCase().includes('case'));
+  const caseRows = rows.filter((r) => r.item.toLowerCase().includes('case'));
+
+  // Same fix already applied to scraps/steel in getMaterialPrices():
+  // itemTrading.getPrices is some other reference number, not what you'd
+  // actually pay — use the real order book's cheapest active sell order
+  // instead, falling back to the reference price only if that fails.
+  const withRealPrices = await Promise.all(
+    caseRows.map(async (row) => ({
+      ...row,
+      price: await getOrderBookPrice(row.item, row.price),
+    }))
+  );
+  return withRealPrices;
 }
 
 /**
@@ -1055,11 +1067,12 @@ function init() {
   renderCasesTab();
   refreshTicker();
   setInterval(refreshTicker, 20_000);
-  // The background ingest store grows continuously server-side — refresh
-  // periodically so the numbers visibly fill in without manual refreshing.
+  // Only Craft ROI auto-refreshes — its numbers genuinely grow as the
+  // background collector runs. Cases doesn't need this (its EV comes from
+  // fixed formulas + Craft ROI's already-refreshing sell data), and
+  // auto-refreshing it was an unwanted side effect, not intentional.
   setInterval(() => {
     if ($('#panel-craft').classList.contains('is-active')) renderCraftRoi();
-    if ($('#panel-cases').classList.contains('is-active')) renderCasesTab();
   }, 30_000);
 }
 
