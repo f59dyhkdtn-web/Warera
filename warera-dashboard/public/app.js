@@ -105,137 +105,6 @@ function marketRowsFrom(data) {
   return [];
 }
 
-async function loadMarket() {
-  const tbody = $('#marketTable tbody');
-  const note = $('#marketNote');
-  tbody.innerHTML = '';
-  note.textContent = 'loading…';
-
-  try {
-    const data = await api('/api/market/prices');
-    console.log('market/prices raw payload:', data);
-    let rows = marketRowsFrom(data);
-
-    const filter = $('#marketFilter').value.trim().toLowerCase();
-    if (filter) rows = rows.filter((r) => r.item.toLowerCase().includes(filter));
-    rows.sort((a, b) => a.item.localeCompare(b.item));
-
-    if (rows.length === 0) {
-      tbody.appendChild(emptyRow(2, 'No items returned. Check the console for the raw payload shape.'));
-      note.textContent = '';
-      return;
-    }
-
-    for (const { item, price } of rows) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${item}</td>
-        <td class="num">${Number.isFinite(price) ? fmtNum(price) : '—'}</td>
-      `;
-      tbody.appendChild(tr);
-    }
-    note.textContent = `${rows.length} item${rows.length === 1 ? '' : 's'} · cached ~30s`;
-  } catch (err) {
-    tbody.appendChild(emptyRow(2, `Failed to load: ${err.message}`));
-    note.textContent = '';
-  }
-}
-
-// ---- Rankings -------------------------------------------------------------
-
-async function loadRankings() {
-  const tbody = $('#rankingsTable tbody');
-  const note = $('#rankingsNote');
-  tbody.innerHTML = '';
-  note.textContent = 'loading…';
-
-  try {
-    const type = $('#rankingType').value;
-    const data = await api(`/api/rankings?type=${encodeURIComponent(type)}&limit=50`);
-    const rows = asArray(data);
-    console.log('rankings raw payload:', data);
-
-    if (rows.length === 0) {
-      tbody.appendChild(emptyRow(4, 'No ranking rows returned. Check the console for the raw payload shape.'));
-      note.textContent = '';
-      return;
-    }
-
-    rows.forEach((row, i) => {
-      const name = pick(row, ['username', 'uname', 'name', 'displayName']);
-      const country = pick(row, ['country', 'countryName']);
-      const value = pick(row, ['value', 'score', type], null);
-
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="num">${i + 1}</td>
-        <td>${name}</td>
-        <td>${country}</td>
-        <td class="num">${value !== null ? fmtNum(value) : '—'}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-    note.textContent = `top ${rows.length} by ${type} · cached ~60s`;
-  } catch (err) {
-    tbody.appendChild(emptyRow(4, `Failed to load: ${err.message}`));
-    note.textContent = '';
-  }
-}
-
-// ---- Battles -------------------------------------------------------------
-
-async function loadBattles() {
-  const grid = $('#battleGrid');
-  const note = $('#battlesNote');
-  grid.innerHTML = '';
-  note.textContent = 'loading…';
-
-  try {
-    const activeOnly = $('#battlesActiveOnly').checked;
-    const data = await api(`/api/battles?limit=30${activeOnly ? '&active=true' : ''}`);
-    const rows = asArray(data);
-    console.log('battles raw payload:', data);
-
-    if (rows.length === 0) {
-      grid.innerHTML = '';
-      grid.appendChild(Object.assign(document.createElement('div'), {
-        className: 'empty-state',
-        textContent: 'No battles returned. Check the console for the raw payload shape.',
-      }));
-      note.textContent = '';
-      return;
-    }
-
-    for (const battle of rows) {
-      const attacker = pick(battle, ['attackerName', 'attackerCountry', 'attacker'], 'Attacker');
-      const defender = pick(battle, ['defenderName', 'defenderCountry', 'defender'], 'Defender');
-      const region = pick(battle, ['regionName', 'region', 'location'], '');
-      const attackerScore = Number(pick(battle, ['attackerScore', 'attackerDamage', 'attackerPoints'], 0)) || 0;
-      const defenderScore = Number(pick(battle, ['defenderScore', 'defenderDamage', 'defenderPoints'], 0)) || 0;
-      const total = attackerScore + defenderScore || 1;
-      const attackerPct = Math.round((attackerScore / total) * 100);
-
-      const card = document.createElement('div');
-      card.className = 'battle-card';
-      card.innerHTML = `
-        <div class="battle-card__sides">${attacker} <span class="battle-card__vs">vs</span> ${defender}</div>
-        <div class="battle-card__meta">
-          <span>${region || 'Region unknown'}</span>
-          <span>${fmtNum(attackerScore)} — ${fmtNum(defenderScore)}</span>
-        </div>
-        <div class="battle-card__bar">
-          <div class="battle-card__bar-fill" style="width:${attackerPct}%"></div>
-        </div>
-      `;
-      grid.appendChild(card);
-    }
-    note.textContent = `${rows.length} battle${rows.length === 1 ? '' : 's'} · cached ~15s`;
-  } catch (err) {
-    grid.innerHTML = '';
-    note.textContent = `Failed to load: ${err.message}`;
-  }
-}
-
 // ---- Craft ROI ------------------------------------------------------------
 
 // Scraps + Steel required per rarity, straight from the in-game "Craft
@@ -257,6 +126,12 @@ const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'];
 // flagged as an assumption, not a fact. Used both for a single "roll" and
 // as the weighting for a rarity's overall P(profit).
 const TYPE_ODDS = { Weapon: 30, Helmet: 14, Chest: 14, Gloves: 14, Pants: 14, Boots: 14 };
+// Confirmed directly from the in-game "Open Case" screen (screenshot):
+// 62% Common, 30% Uncommon, 7.1% Rare, 0.85% Epic, 0.04% Legendary, 0.01%
+// Mythic — and, per the same confirmation, equipment TYPE within a given
+// rarity follows the same odds as crafting (TYPE_ODDS above), independent
+// of rarity. So full outcome probability = RARITY_ODDS × TYPE_ODDS.
+const RARITY_ODDS = { common: 62, uncommon: 30, rare: 7.1, epic: 0.85, legendary: 0.04, mythic: 0.01 };
 const SLOTS = Object.keys(TYPE_ODDS);
 
 // User-confirmed in-game (not from any documented API field): each weapon
@@ -278,7 +153,6 @@ const WEAPON_NAME_TO_RARITY = {
 // with the same weight as a 500-sale one.
 const CONFIDENCE = { high: 100, medium: 20 };
 
-let craftHistoryCache = null; // { fetchedAt, hours, transactions: parsed[] }
 let craftHoursWindow = 24;
 // Two independent ways to pick which sales feed each stat-roll bucket's
 // average: 'window' (the hours buttons, with fallback — see buildStatBuckets)
@@ -425,11 +299,12 @@ function parseTransaction(tx) {
 }
 
 let craftIngestStatus = null; // { storeSize, ingestActive, typeCounts } — for the coverage note
+let rawHistoryCache = null; // { fetchedAt, raw } — shared underlying fetch for both Craft ROI and Cases tabs
 
-async function fetchCraftHistory() {
+async function fetchRawHistory() {
   const now = Date.now();
-  if (craftHistoryCache && now - craftHistoryCache.fetchedAt < 20_000) {
-    return craftHistoryCache.transactions;
+  if (rawHistoryCache && now - rawHistoryCache.fetchedAt < 20_000) {
+    return rawHistoryCache.raw;
   }
   const res = await fetch('/api/craft/history?hours=168'); // 7 days — the 1h-24h window buttons still control the "preferred/fresh" side; this widens how far the fallback can reach
   const body = await res.json();
@@ -438,9 +313,86 @@ async function fetchCraftHistory() {
   console.log('item codes collected so far:', body.itemCodeCounts);
   craftIngestStatus = { storeSize: body.storeSize, ingestActive: body.ingestActive, typeCounts: body.typeCounts };
   const raw = asArray(body.data);
-  const transactions = raw.map(parseTransaction).filter((tx) => tx !== null && tx.price !== null);
-  craftHistoryCache = { fetchedAt: now, transactions };
-  return transactions;
+  rawHistoryCache = { fetchedAt: now, raw };
+  return raw;
+}
+
+async function fetchCraftHistory() {
+  const raw = await fetchRawHistory();
+  return raw.map(parseTransaction).filter((tx) => tx !== null && tx.price !== null);
+}
+
+/**
+ * openCase records: { itemCode: <case code>, item: { code: <what came out>, ... } }.
+ * Confirmed live earlier in this project (itemCode: "case1", item.code: "gloves1").
+ */
+function parseCaseOpen(tx) {
+  if (tx.transactionType !== 'openCase') return null;
+  if (!tx.item || !tx.item.code) return null;
+
+  const caseCode = String(tx.itemCode ?? '');
+  const resultCode = String(tx.item.code);
+  let resultRarity = null;
+  let resultSlot = null;
+  const armorMatch = resultCode.match(ARMOR_CODE_PATTERN);
+  if (armorMatch) {
+    resultSlot = ARMOR_CODE_TO_SLOT[armorMatch[1].toLowerCase()];
+    resultRarity = RARITIES[Number(armorMatch[2]) - 1] ?? null;
+  } else if (resultCode) {
+    resultSlot = 'Weapon';
+    resultRarity = WEAPON_NAME_TO_RARITY[resultCode.toLowerCase()] ?? null;
+  }
+
+  const tsRaw = tx.createdAt ?? null;
+  return {
+    caseCode,
+    resultCode,
+    resultRarity,
+    resultSlot,
+    timestampMs: tsRaw ? new Date(tsRaw).getTime() : null,
+  };
+}
+
+/**
+ * dismantleItem records: { itemCode: <material received, e.g. "scraps">,
+ * quantity: <amount>, item: { code: <what was dismantled>, ... } }.
+ */
+function parseDismantle(tx) {
+  if (tx.transactionType !== 'dismantleItem') return null;
+  if (!tx.item || !tx.item.code) return null;
+
+  const materialCode = String(tx.itemCode ?? '');
+  const quantity = Number(tx.quantity) || 0;
+  const sourceCode = String(tx.item.code);
+  let sourceRarity = null;
+  let sourceSlot = null;
+  const armorMatch = sourceCode.match(ARMOR_CODE_PATTERN);
+  if (armorMatch) {
+    sourceSlot = ARMOR_CODE_TO_SLOT[armorMatch[1].toLowerCase()];
+    sourceRarity = RARITIES[Number(armorMatch[2]) - 1] ?? null;
+  } else if (sourceCode) {
+    sourceSlot = 'Weapon';
+    sourceRarity = WEAPON_NAME_TO_RARITY[sourceCode.toLowerCase()] ?? null;
+  }
+
+  const tsRaw = tx.createdAt ?? null;
+  return {
+    materialCode,
+    quantity,
+    sourceRarity,
+    sourceSlot,
+    timestampMs: tsRaw ? new Date(tsRaw).getTime() : null,
+  };
+}
+
+async function fetchCaseOpens() {
+  const raw = await fetchRawHistory();
+  return raw.map(parseCaseOpen).filter((x) => x !== null);
+}
+
+async function fetchDismantles() {
+  const raw = await fetchRawHistory();
+  return raw.map(parseDismantle).filter((x) => x !== null);
 }
 
 function withinWindow(transactions, hours) {
@@ -821,22 +773,230 @@ async function renderCraftRoi() {
   }
 }
 
+// ---- Cases (Case ROI) ------------------------------------------------------
+
+// Which real market items look like case SKUs — auto-discovered rather than
+// hardcoded, since case pricing/naming isn't confirmed (a much earlier
+// itemTrading.getPrices dump appeared to show "case"-like keys, but that
+// was never independently verified against this specific use).
+async function discoverCasePrices() {
+  const data = await api('/api/market/prices');
+  const rows = marketRowsFrom(data);
+  return rows.filter((r) => r.item.toLowerCase().includes('case'));
+}
+
+/**
+ * Full 36-outcome distribution (6 rarities × 6 slots), confirmed directly
+ * from the in-game "Open Case" screen — RARITY_ODDS and TYPE_ODDS are
+ * independent, so P(outcome) = P(rarity) × P(slot). Same for every case
+ * SKU (no per-case odds difference has been confirmed or observed).
+ */
+function theoreticalOutcomeOdds() {
+  const totalRarity = Object.values(RARITY_ODDS).reduce((s, v) => s + v, 0);
+  const totalType = Object.values(TYPE_ODDS).reduce((s, v) => s + v, 0);
+  const outcomes = [];
+  RARITIES.forEach((rarity) => {
+    SLOTS.forEach((slot) => {
+      outcomes.push({
+        rarity,
+        slot,
+        prob: (RARITY_ODDS[rarity] / totalRarity) * (TYPE_ODDS[slot] / totalType),
+      });
+    });
+  });
+  return outcomes;
+}
+
+/**
+ * Confirmed directly (in-game, via player): dismantling refunds exactly
+ * the scraps used to craft that rarity (100%) and NO steel. Uses the same
+ * CRAFT_COST table Craft ROI already relies on, so the two stay in sync.
+ */
+function scrapValueFor(rarity, materialPrices) {
+  const cost = CRAFT_COST[rarity];
+  if (!cost || !Number.isFinite(materialPrices.scraps)) return null;
+  return cost.scraps * materialPrices.scraps;
+}
+
+function computeSellValue(marketTx, rarity, slot) {
+  const s = statsFor(marketTx, marketTx, rarity, slot, null);
+  return s.avgPrice;
+}
+
+function computeCaseEV(marketTx, materialPrices) {
+  const outcomes = theoreticalOutcomeOdds().map((o) => ({
+    ...o,
+    sellValue: computeSellValue(marketTx, o.rarity, o.slot),
+    scrapValue: scrapValueFor(o.rarity, materialPrices),
+  }));
+
+  function weightedEV(valueFn) {
+    let total = 0;
+    let weight = 0;
+    outcomes.forEach((o) => {
+      const v = valueFn(o);
+      if (v === null) return; // unknown outcomes excluded, remaining renormalized
+      total += v * o.prob;
+      weight += o.prob;
+    });
+    return weight > 0 ? total / weight : null;
+  }
+
+  return {
+    outcomes,
+    evSellAll: weightedEV((o) => o.sellValue),
+    evScrapAll: weightedEV((o) => o.scrapValue),
+    evOptimal: weightedEV((o) => {
+      if (o.sellValue === null) return o.scrapValue;
+      if (o.scrapValue === null) return o.sellValue;
+      return Math.max(o.sellValue, o.scrapValue);
+    }),
+    evCustom: weightedEV((o) => {
+      const choice = customStrategy[o.rarity] || 'sell';
+      const preferred = choice === 'scrap' ? o.scrapValue : o.sellValue;
+      return preferred !== null ? preferred : (choice === 'scrap' ? o.sellValue : o.scrapValue);
+    }),
+  };
+}
+
+let caseDataCache = null;
+const customStrategy = {}; // rarity -> 'sell' | 'scrap'
+RARITIES.forEach((r) => { customStrategy[r] = 'sell'; });
+
+function caseStrategyRow(label, gross, net, starred) {
+  const netCls = net === null ? '' : net >= 0 ? 'up' : 'down';
+  return `
+    <tr class="${starred ? 'case-strategy-table__optimal' : ''}">
+      <td>${label}</td>
+      <td class="num">${gross !== null ? fmtNum(gross) : '—'}</td>
+      <td class="num ${netCls}">${net !== null ? `${net >= 0 ? '+' : ''}${fmtNum(net)}` : '—'}</td>
+    </tr>
+  `;
+}
+
+function renderCaseCards() {
+  const grid = $('#caseGrid');
+  if (!caseDataCache) return;
+  const { priceRows, materialPrices, marketTx } = caseDataCache;
+  const ev = computeCaseEV(marketTx, materialPrices); // same distribution for every case — only price differs
+  const sellSampleTotal = ev.outcomes.reduce((s, o) => s + (statsFor(marketTx, marketTx, o.rarity, o.slot, null).count || 0), 0);
+
+  grid.innerHTML = priceRows
+    .map((row) => {
+      const caseCode = row.item;
+      const price = row.price;
+
+      const netOptimal = ev.evOptimal !== null ? ev.evOptimal - price : null;
+      const netSell = ev.evSellAll !== null ? ev.evSellAll - price : null;
+      const netScrap = ev.evScrapAll !== null ? ev.evScrapAll - price : null;
+      const netCustom = ev.evCustom !== null ? ev.evCustom - price : null;
+      const pct = netOptimal !== null && price > 0 ? (netOptimal / price) * 100 : null;
+
+      return `
+        <div class="case-card">
+          <div class="case-card__head">
+            <span class="case-card__title">${caseCode}</span>
+            ${pct !== null
+              ? `<span class="case-verdict ${pct >= 0 ? 'case-verdict--good' : 'case-verdict--bad'}">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`
+              : '<span class="confidence-chip confidence-none">no sell data yet</span>'}
+          </div>
+          <div class="case-card__verdict-label ${netOptimal === null ? '' : netOptimal >= 0 ? 'up' : 'down'}">
+            ${netOptimal === null ? 'Not enough sell data yet' : netOptimal >= 0 ? 'Opening pays off' : "Don't open"}
+          </div>
+          <div class="case-card__stats">
+            <div><span class="case-stat__label">Price</span><span class="case-stat__value">${fmtNum(price)}</span></div>
+            <div><span class="case-stat__label">EV optimal</span><span class="case-stat__value">${ev.evOptimal !== null ? fmtNum(ev.evOptimal) : '—'}</span></div>
+            <div><span class="case-stat__label">Net</span><span class="case-stat__value ${netOptimal === null ? '' : netOptimal >= 0 ? 'up' : 'down'}">${netOptimal !== null ? `${netOptimal >= 0 ? '+' : ''}${fmtNum(netOptimal)}` : '—'}</span></div>
+          </div>
+          <table class="case-strategy-table">
+            <tbody>
+              ${caseStrategyRow("Sell case (don't open)", price, null, false)}
+              ${caseStrategyRow('Open → sell everything', ev.evSellAll, netSell, false)}
+              ${caseStrategyRow('Open → scrap everything', ev.evScrapAll, netScrap, false)}
+              ${caseStrategyRow('Open → optimal (max sell/scrap)', ev.evOptimal, netOptimal, true)}
+              ${caseStrategyRow('Open → your strategy', ev.evCustom, netCustom, false)}
+            </tbody>
+          </table>
+          <p class="case-sample-note">Odds and scrap value: confirmed in-game formulas. Sell values: ${sellSampleTotal} real equipment sales across all 36 outcomes (shared with Craft ROI).</p>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function renderStrategyPanel() {
+  const el = $('#strategyRarityRow');
+  el.innerHTML = RARITIES.map(
+    (r) => `
+    <div class="strategy-rarity-item">
+      <span class="rarity-chip rarity-${r}">${r}</span>
+      <div class="time-filter">
+        <button data-rarity="${r}" data-action="sell" class="${customStrategy[r] === 'sell' ? 'is-active' : ''}">sell</button>
+        <button data-rarity="${r}" data-action="scrap" class="${customStrategy[r] === 'scrap' ? 'is-active' : ''}">scrap</button>
+      </div>
+    </div>
+  `
+  ).join('');
+
+  $$('.strategy-rarity-item button', el).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      customStrategy[btn.dataset.rarity] = btn.dataset.action;
+      renderCaseCards();
+      renderStrategyPanel();
+    });
+  });
+}
+
+async function renderCasesTab() {
+  const grid = $('#caseGrid');
+  const note = $('#casesNote');
+  grid.innerHTML = '<p class="empty-state">Loading case data…</p>';
+
+  try {
+    const [priceRows, materialPrices, caseOpens, dismantles, marketTx] = await Promise.all([
+      discoverCasePrices(),
+      getMaterialPrices(),
+      fetchCaseOpens(),
+      fetchDismantles(),
+      fetchCraftHistory(),
+    ]);
+
+    if (priceRows.length === 0) {
+      grid.innerHTML = `
+        <p class="empty-state">
+          No case-priced items found via itemTrading.getPrices — cases might not
+          trade through the simple goods market at all (could be a fixed shop
+          price instead of a live market price). Check the console for the full
+          price list this pulled from.
+        </p>
+      `;
+      note.textContent = '';
+      console.log('material prices checked for case-like keys:', materialPrices);
+      return;
+    }
+
+    console.log('discovered case price entries:', priceRows);
+    console.log('openCase/dismantleItem observed so far (not required, informational):', { caseOpens: caseOpens.length, dismantles: dismantles.length });
+    caseDataCache = { priceRows, materialPrices, marketTx };
+    renderCaseCards();
+    renderStrategyPanel();
+
+    note.textContent = `Odds (62/30/7.1/0.85/0.04/0.01% by rarity, 30/14/14/14/14/14% by slot) ` +
+      `and scrap value (100% of craft scraps, confirmed no steel refund) use confirmed in-game formulas — ` +
+      `not observed frequency. Sell values come from real trade history, shared with Craft ROI.`;
+  } catch (err) {
+    grid.innerHTML = `<p class="empty-state">Failed to load: ${err.message}</p>`;
+    note.textContent = '';
+  }
+}
+
 // ---- Wire up -------------------------------------------------------------
 
 function init() {
   initTabs();
 
-  $('#marketRefresh').addEventListener('click', loadMarket);
-  $('#marketFilter').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') loadMarket();
-  });
-  $('#rankingsRefresh').addEventListener('click', loadRankings);
-  $('#rankingType').addEventListener('change', loadRankings);
-  $('#battlesRefresh').addEventListener('click', loadBattles);
-  $('#battlesActiveOnly').addEventListener('change', loadBattles);
-
   $('#craftRefresh').addEventListener('click', () => {
-    craftHistoryCache = null; // force a fresh fetch
+    rawHistoryCache = null; // force a fresh fetch
     renderCraftRoi();
   });
   $$('#timeFilter button').forEach((btn) => {
@@ -886,16 +1046,20 @@ function init() {
     renderCraftRoi();
   });
 
-  loadMarket();
-  loadRankings();
-  loadBattles();
+  $('#casesRefresh').addEventListener('click', () => {
+    caseDataCache = null;
+    renderCasesTab();
+  });
+
   renderCraftRoi();
+  renderCasesTab();
   refreshTicker();
   setInterval(refreshTicker, 20_000);
   // The background ingest store grows continuously server-side — refresh
   // periodically so the numbers visibly fill in without manual refreshing.
   setInterval(() => {
     if ($('#panel-craft').classList.contains('is-active')) renderCraftRoi();
+    if ($('#panel-cases').classList.contains('is-active')) renderCasesTab();
   }, 30_000);
 }
 

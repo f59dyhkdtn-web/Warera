@@ -777,3 +777,131 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
 @media (max-width: 640px) {
   .masthead, .tabs, .panels { padding-left: 16px; padding-right: 16px; }
 }
+
+/* ---------- Cases (Case ROI) ---------- */
+
+.case-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.case-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 18px 20px;
+}
+
+.case-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.case-card__title {
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.case-verdict {
+  font-family: var(--display);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 2px;
+}
+
+.case-verdict--good { color: #7fae5c; border: 1px solid #7fae5c; }
+.case-verdict--bad { color: var(--red-glow); border: 1px solid var(--red); }
+
+.case-card__verdict-label {
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin-bottom: 14px;
+}
+
+.case-card__verdict-label.up { color: #7fae5c; }
+.case-card__verdict-label.down { color: var(--red-glow); }
+
+.case-card__stats {
+  display: flex;
+  gap: 20px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.case-stat__label {
+  display: block;
+  font-size: 10px;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+
+.case-stat__value {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.case-strategy-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.case-strategy-table td {
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.case-strategy-table__optimal td {
+  font-weight: 600;
+  color: var(--brass);
+}
+
+.case-sample-note {
+  font-size: 10px;
+  color: var(--ink-dim);
+  margin: 0;
+}
+
+.custom-strategy-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--brass-dim);
+  border-radius: 2px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.custom-strategy-panel h3 {
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
+
+.strategy-rarity-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.strategy-rarity-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

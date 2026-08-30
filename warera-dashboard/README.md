@@ -97,6 +97,11 @@ public/app.js        Dashboard data-fetching + rendering
 
 ## Backend routes
 
+The Market/Rankings/Battles tabs were removed from the UI (unused), but their backend
+routes stay — `/api/market/prices` and `/api/market/orders` are still used internally
+by Craft ROI and Cases (material prices, order-book prices), and the rest are cheap to
+leave in place in case a future tab wants them.
+
 | Route                                   | WarEra procedure               |
 |------------------------------------------|---------------------------------|
 | `GET /api/market/prices?item=CODE`        | `itemTrading.getPrices`         |
@@ -110,6 +115,7 @@ public/app.js        Dashboard data-fetching + rendering
 | `GET /api/search?q=...`                   | `search.searchAnything`         |
 | `GET /api/users/:id`                       | `user.getUserById`              |
 | `GET /api/events?limit=20&country=...`     | `event.getEventsPaginated`      |
+| `GET /api/craft/history?hours=168`         | `transaction.getPaginatedTransactions` (reads from the background collector — see below) |
 
 Each route just calls `warera.query(procedure, input, options)` — adding a new one for
 any other procedure (e.g. `mu.getById` for military units, `company.getById`,
@@ -124,9 +130,8 @@ a fraction of it.
   error from the WarEra API is logged there. Rate limiting (429) is retried
   automatically a few times; anything else usually means a procedure name or input
   shape has changed on WarEra's side.
-- **A panel loads but columns are empty/"—"**: open the browser console, find the
-  logged raw payload (e.g. `market/prices raw payload: …`), and update the relevant
-  `pick([...])` field-name list in `public/app.js` to match.
+- **A number looks empty/"—"**: open the browser console, find the logged raw
+  payload, and update the relevant field-name list in `public/app.js` to match.
 - **Some endpoints may require auth** (the community docs mention rankings/referrals
   sometimes needing an API key). If you hit that, you'd add an `Authorization` or
   `X-API-Key` header in `lib/warera.js`'s `fetchWithRetry`.
@@ -240,6 +245,40 @@ always the full ~24h collected total for that row, since a tiny window's sample 
 make the confidence badges misleading. What *does* change with the selected mode is
 how many of those sales actually fed the displayed price — shown as "X used" next to
 the count on rarity cards, and as "24h total / used" in the breakdown table.
+
+## Cases tab
+
+Compares buying/opening a case against just reselling it — same "sell everything /
+scrap everything / optimal / your strategy" comparison the reference community tool
+(the same one Craft ROI was modeled after) uses for this.
+
+- **Case prices/SKUs are auto-discovered, not hardcoded.** `discoverCasePrices()`
+  scans `itemTrading.getPrices`' response for any key containing "case" — confirmed
+  by the person running this that cases do trade through that same simple-goods
+  system as scraps/steel, so this is expected to reliably find them.
+- **Outcome odds are a confirmed in-game formula, not observed frequency.**
+  Confirmed directly from the in-game "Open Case" screen: 62% Common / 30% Uncommon /
+  7.1% Rare / 0.85% Epic / 0.04% Legendary / 0.01% Mythic, and — also confirmed —
+  equipment slot within a rolled rarity follows the same odds as crafting (30%
+  Weapon / 14% each armor piece), independent of rarity. `theoreticalOutcomeOdds()`
+  in `app.js` combines these into the full 36-outcome distribution. This applies to
+  every case SKU equally — no per-case odds difference has been confirmed.
+- **Scrap value is a confirmed in-game formula too.** Dismantling refunds exactly
+  the scraps used to craft that rarity (100%) and confirmed **no steel refund** —
+  `scrapValueFor()` reuses the same `CRAFT_COST` table Craft ROI already relies on,
+  so the two stay in sync automatically.
+- **Sell values reuse Craft ROI's existing rarity+slot price data** (`statsFor()`) —
+  no separate pricing logic, so improvements to Craft ROI's accuracy carry over here
+  automatically. This is the one part of the calculation still bounded by real
+  collected sales, same as Craft ROI itself.
+- **`openCase` and `dismantleItem` transactions are still collected** in the
+  background (alongside `itemMarket` sales), but only informationally now, logged to
+  the console — not required for the tab to show real numbers, since odds and scrap
+  value come from the confirmed formulas above instead. Could be used later as a
+  cross-check against the formulas if useful.
+- **The custom-strategy panel** (sell vs scrap per rarity) defaults to "sell" for
+  every rarity — pick per rarity and both case cards' "your strategy" row updates
+  live from the same already-collected data, no refetch.
 
 ## Disclaimer
 

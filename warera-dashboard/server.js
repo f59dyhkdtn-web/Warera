@@ -169,8 +169,16 @@ async function ingestTick() {
     // sales (armor OR weapons) from raw-material trades, which have no
     // nested item object at all — without needing to know every exact
     // type string in advance.
+    // Also capturing openCase and dismantleItem now (previously only
+    // itemMarket) — the new Cases tab needs real per-case rarity odds
+    // (from openCase records: which case was opened + what came out) and
+    // real dismantle refund amounts (from dismantleItem records: what
+    // materials + quantity came back for a known source item), neither of
+    // which can be reliably guessed. Both types carry a nested item.code
+    // the same way itemMarket sales do, so the same shape check applies.
+    const KNOWN_TYPES = new Set(['itemMarket', 'openCase', 'dismantleItem']);
     for (const item of items) {
-      if (item && item._id && item.transactionType === 'itemMarket' && item.item?.code) {
+      if (item && item._id && KNOWN_TYPES.has(item.transactionType) && item.item?.code) {
         txStore.set(item._id, item);
       }
     }
