@@ -657,7 +657,7 @@ function renderRarityGrid(windowedTx, fullTx, prices) {
             <span class="rarity-chip rarity-${r.rarity}">${r.rarity}</span>
             <span class="confidence-chip confidence-${conf.cls}">${conf.label}</span>
           </div>
-          <div class="rarity-card__sample">${r.count} sale${r.count === 1 ? '' : 's'} (7d) <span class="used-tag">· ${r.usedCount} used</span></div>
+          <div class="rarity-card__sample">${r.count} sale${r.count === 1 ? '' : 's'} (7d) <span class="used-tag">· ${r.usedCount > 0 ? `${r.usedCount} in window` : 'none in window, using older data'}</span></div>
           <div class="rarity-card__pct ${pctCls}">${pctText}</div>
           <div class="rarity-card__margin">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)} per craft` : '—'}</div>
           <div class="rarity-card__foot">
@@ -700,7 +700,7 @@ function renderBreakdown(windowedTx, fullTx, prices) {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Slot</th><th>Odds</th><th>Avg Sale Price</th><th>Margin</th><th>P(profit)</th><th>Sales (7d / used)</th></tr>
+          <tr><th>Slot</th><th>Odds</th><th>Avg Sale Price</th><th>Margin</th><th>P(profit)</th><th title="7-day total / sales within your selected window. 0* means the price is using older data — nothing sold in this exact window, but the row isn't empty.">Sales (7d / used)</th></tr>
         </thead>
         <tbody>
           ${rows
@@ -712,7 +712,7 @@ function renderBreakdown(windowedTx, fullTx, prices) {
               <td class="num">${r.avgPrice !== null ? fmtNum(r.avgPrice) : '—'}</td>
               <td class="num ${r.marginAbs === null ? '' : r.marginAbs >= 0 ? 'up' : 'down'}">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)}` : '—'}</td>
               <td class="num">${r.pProfit !== null ? r.pProfit.toFixed(1) + '%' : '—'}</td>
-              <td class="num">${r.count} / ${r.usedCount}</td>
+              <td class="num" title="${r.usedCount > 0 ? `${r.usedCount} sale(s) within the selected window` : 'No sale within the selected window — price uses older data for this row'}">${r.count} / ${r.usedCount > 0 ? r.usedCount : '0*'}</td>
             </tr>
           `
             )

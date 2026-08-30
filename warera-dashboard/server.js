@@ -280,6 +280,7 @@ app.get('/api/craft/debug', async (req, res) => {
   try {
     const input = { transactionType: req.query.transactionType || 'itemMarket', limit: 5 };
     if (req.query.itemCode) input.itemCode = req.query.itemCode;
+    if (req.query.userId) input.userId = req.query.userId;
     const data = await warera.query('transaction.getPaginatedTransactions', input, { skipCache: true });
     res.json({ ok: true, data });
   } catch (err) {
