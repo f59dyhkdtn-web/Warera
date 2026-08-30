@@ -1253,7 +1253,7 @@ async function loadMyRoi() {
     return;
   }
 
-  $('#myRoiSummary').innerHTML = '<p class="empty-state">Loading your transactions…</p>';
+  $('#myRoiSummary').innerHTML = '<p class="empty-state">Loading your transactions&hellip; first load for a new user pages through your full history and can take a while; repeat loads are fast (only new transactions get fetched).</p>';
   $('#myRoiBreakdown').innerHTML = '';
   note.textContent = '';
 
@@ -1264,9 +1264,11 @@ async function loadMyRoi() {
     renderMyRoi(parsed, weeks);
     note.textContent =
       `${raw.length} transactions loaded, going back up to ${weeks} week${weeks === 1 ? '' : 's'}. ` +
-      `Cash flow ("seller receives, buyer pays") is confirmed for item/trading sales — assumed, not ` +
-      `independently verified, for wages/donations/etc. Crafting/Dismantling/Case Opening rows show ` +
-      `counts only (no cash field on those records) — they're material events, not money transfers.`;
+      `Persisted server-side per user, so the next load only fetches what's new since this one — ` +
+      `much faster than this first pass. Cash flow ("seller receives, buyer pays") is confirmed for ` +
+      `item/trading sales — assumed, not independently verified, for wages/donations/etc. ` +
+      `Crafting/Dismantling/Case Opening rows show counts only (no cash field on those records) — ` +
+      `they're material events, not money transfers.`;
   } catch (err) {
     $('#myRoiSummary').innerHTML = `<p class="empty-state">Failed to load: ${err.message}</p>`;
   }

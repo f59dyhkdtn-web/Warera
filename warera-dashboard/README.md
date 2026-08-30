@@ -369,8 +369,23 @@ sampling of the whole game.
   currency transfers), so this tab is honest about that rather than inventing a
   monetary value for them. Correlating their real cost/value against Craft ROI's or
   Cases' pricing data would be a reasonable future extension, not attempted yet.
+- **Persisted per user (if Upstash is configured), with incremental refresh.** First
+  load for a new user has to page through their full requested history — unavoidably
+  slow. Every load after that only fetches transactions newer than what's already
+  persisted (`queryUserTransactions`' `knownIds` param stops paging as soon as it
+  recognizes an already-seen transaction, since pages return newest-first), then
+  merges with the stored snapshot. Keeps a rolling 5-week window server-side
+  regardless of what's currently selected, so widening the weeks dropdown doesn't
+  force a full refetch either. Without Upstash configured, this still works — it's
+  just slow every time, like the first load always is.
+- **The background collector was slowed slightly (400ms/tick, from 320ms) to make
+  room for this.** It was continuously using nearly the entire shared rate budget,
+  which meant a first-time My ROI load (up to 200 sequential requests) had to queue
+  behind it. Trades a bit of Craft ROI/Cases collection speed for on-demand
+  requests actually getting a fair share of the budget.
 - No account/login system — you paste in your own user ID (found in your profile's
-  URL) each time; nothing is stored server-side beyond a brief 3-minute cache per ID.
+  URL) each time; nothing is stored server-side beyond a brief 3-minute cache per ID
+  and (if Upstash is configured) the persisted per-user snapshot described above.
 
 ## Disclaimer
 

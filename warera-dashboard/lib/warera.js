@@ -331,12 +331,18 @@ async function queryPost(procedure, input, opts = {}) {
  * and complete, since userId genuinely filters server-side here (see
  * queryPost above), unlike the general background collector which has
  * to passively sample everything because no filter works for it. Stops
- * once either the cursor runs out or items get older than `oldestMs`.
+ * once the cursor runs out, items get older than `oldestMs`, OR (if
+ * `knownIds` is given) as soon as a page contains a transaction already
+ * seen before — pages return newest-first, so hitting a known ID means
+ * everything from there on is already in the persisted snapshot. This
+ * makes repeat loads for the same user fast regardless of total history
+ * size: only genuinely new transactions get fetched.
  */
 async function queryUserTransactions(userId, opts = {}) {
   const oldestMs = opts.oldestMs;
   const maxPages = opts.maxPages ?? 200;
   const pageSize = opts.pageSize ?? 50;
+  const knownIds = opts.knownIds ?? null;
 
   const all = [];
   let cursor;
@@ -347,7 +353,16 @@ async function queryUserTransactions(userId, opts = {}) {
     const data = await queryPost('transaction.getPaginatedTransactions', input);
     const items = Array.isArray(data?.items) ? data.items : [];
     if (items.length === 0) break;
-    all.push(...items);
+
+    let hitKnown = false;
+    for (const item of items) {
+      if (knownIds && item._id && knownIds.has(item._id)) {
+        hitKnown = true;
+        break;
+      }
+      all.push(item);
+    }
+    if (hitKnown) break;
 
     cursor = data?.nextCursor;
 

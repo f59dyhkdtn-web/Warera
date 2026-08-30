@@ -143,6 +143,38 @@ if (PERSIST_ENABLED) {
   );
 }
 
+// Per-user snapshots for My ROI — same Upstash setup as above, keyed per
+// user instead of one shared key. Lets repeat loads for the same user
+// fetch only what's new since last time (see queryUserTransactions'
+// knownIds param) instead of re-paginating the whole requested window
+// every single load.
+async function loadMyTxSnapshot(userId) {
+  if (!PERSIST_ENABLED) return [];
+  try {
+    const res = await fetch(`${UPSTASH_URL}/get/warera_my_tx_${userId}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    });
+    const body = await res.json();
+    return body?.result ? JSON.parse(body.result) : [];
+  } catch (err) {
+    console.error(`my-tx snapshot load failed for ${userId}:`, err.message);
+    return [];
+  }
+}
+
+async function saveMyTxSnapshot(userId, items) {
+  if (!PERSIST_ENABLED) return;
+  try {
+    await fetch(`${UPSTASH_URL}/set/warera_my_tx_${userId}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      body: JSON.stringify(items),
+    });
+  } catch (err) {
+    console.error(`my-tx snapshot save failed for ${userId}:`, err.message);
+  }
+}
+
 let ingestCursor; // undefined = "start from the newest page"
 let ingestTicksSinceResync = 0;
 const RESYNC_EVERY_TICKS = 200; // periodically re-check the newest page so brand-new trades aren't missed
@@ -209,10 +241,13 @@ async function ingestTick() {
   }
 }
 
-// 190/min shared budget ÷ ~1 request per tick ≈ one tick every ~320ms.
-// Other tabs (market/rankings/battles) are cached 15-60s so they barely
-// touch this budget — ingestion can safely use nearly all of it.
-const INGEST_INTERVAL_MS = 320;
+// 190/min shared budget ÷ ~1 request per tick. Deliberately NOT using
+// nearly the whole budget anymore — My ROI's on-demand pagination bursts
+// (up to 200 sequential requests for a first-time user) were queuing
+// behind this continuously-running collector and taking a long time to
+// clear. ~400ms leaves real headroom (~90/min) for on-demand requests
+// while still collecting at a reasonable pace for Craft ROI/Cases.
+const INGEST_INTERVAL_MS = 400;
 
 async function startIngestion() {
   await persistLoad(); // resume from a saved snapshot, if one exists, before ticking
@@ -334,10 +369,47 @@ app.get('/api/my/transactions', async (req, res) => {
   }
 
   try {
+    const existing = await loadMyTxSnapshot(userId); // [] if nothing persisted yet for this user
+    const existingIds = new Set(existing.map((t) => t._id).filter(Boolean));
     const oldestMs = Date.now() - weeks * 7 * 24 * 60 * 60 * 1000;
-    const items = await warera.queryUserTransactions(userId, { oldestMs, maxPages: 200, pageSize: 50 });
-    myTxCache.set(cacheKey, { data: items, expiresAt: Date.now() + MY_TX_CACHE_TTL_MS });
-    res.json({ ok: true, data: items, cached: false });
+
+    // Only pages back as far as needed: stops at the first already-known
+    // transaction if we have a snapshot (fast repeat loads), or paginates
+    // the full requested window if this user has never been fetched
+    // before (unavoidably slower — nothing to skip yet).
+    const newItems = await warera.queryUserTransactions(userId, {
+      knownIds: existingIds.size > 0 ? existingIds : null,
+      oldestMs,
+      maxPages: 200,
+      pageSize: 50,
+    });
+
+    // Merge, dedupe, and keep a slightly wider rolling window than
+    // requested (5 weeks) so switching the weeks dropdown to something
+    // larger than last time doesn't require a full refetch either.
+    const merged = [...newItems, ...existing];
+    const seen = new Set();
+    const deduped = merged.filter((t) => {
+      if (!t._id || seen.has(t._id)) return false;
+      seen.add(t._id);
+      return true;
+    });
+    const rollingCutoff = Date.now() - 5 * 7 * 24 * 60 * 60 * 1000;
+    const trimmed = deduped.filter((t) => {
+      const ts = t.createdAt ? new Date(t.createdAt).getTime() : null;
+      return ts === null || ts >= rollingCutoff;
+    });
+
+    await saveMyTxSnapshot(userId, trimmed);
+
+    const displayCutoff = Date.now() - weeks * 7 * 24 * 60 * 60 * 1000;
+    const forDisplay = trimmed.filter((t) => {
+      const ts = t.createdAt ? new Date(t.createdAt).getTime() : null;
+      return ts === null || ts >= displayCutoff;
+    });
+
+    myTxCache.set(cacheKey, { data: forDisplay, expiresAt: Date.now() + MY_TX_CACHE_TTL_MS });
+    res.json({ ok: true, data: forDisplay, cached: false, newlyFetched: newItems.length, totalStored: trimmed.length });
   } catch (err) {
     console.error(err);
     res.status(502).json({ ok: false, error: err.message });
