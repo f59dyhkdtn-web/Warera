@@ -346,13 +346,19 @@ async function queryUserTransactions(userId, opts = {}) {
 
   const all = [];
   let cursor;
+  let pagesUsed = 0;
+  let stopReason = 'maxPages';
   for (let page = 0; page < maxPages; page += 1) {
+    pagesUsed = page + 1;
     const input = { direction: 'forward', limit: pageSize, userId };
     if (cursor !== undefined) input.cursor = cursor;
 
     const data = await queryPost('transaction.getPaginatedTransactions', input);
     const items = Array.isArray(data?.items) ? data.items : [];
-    if (items.length === 0) break;
+    if (items.length === 0) {
+      stopReason = 'noMoreItems';
+      break;
+    }
 
     let hitKnown = false;
     for (const item of items) {
@@ -362,7 +368,10 @@ async function queryUserTransactions(userId, opts = {}) {
       }
       all.push(item);
     }
-    if (hitKnown) break;
+    if (hitKnown) {
+      stopReason = 'hitKnownTransaction';
+      break;
+    }
 
     cursor = data?.nextCursor;
 
@@ -371,11 +380,18 @@ async function queryUserTransactions(userId, opts = {}) {
         .map((it) => (it.createdAt ? new Date(it.createdAt).getTime() : NaN))
         .filter(Number.isFinite);
       const oldestOnPage = timestamps.length ? Math.min(...timestamps) : NaN;
-      if (Number.isFinite(oldestOnPage) && oldestOnPage < oldestMs) break;
+      if (Number.isFinite(oldestOnPage) && oldestOnPage < oldestMs) {
+        stopReason = 'reachedOldestMs';
+        break;
+      }
     }
 
-    if (!cursor) break;
+    if (!cursor) {
+      stopReason = 'noNextCursor';
+      break;
+    }
   }
+  if (opts.stats) Object.assign(opts.stats, { pagesUsed, stopReason, itemsFetched: all.length });
   return all;
 }
 

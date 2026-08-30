@@ -1183,6 +1183,7 @@ async function fetchMyTransactions(userId, weeks) {
   const res = await fetch(`/api/my/transactions?userId=${encodeURIComponent(userId)}&weeks=${weeks}`);
   const body = await res.json();
   if (!res.ok || body.ok === false) throw new Error(body.error || 'Failed to load your transactions');
+  console.log('my transactions fetch stats:', { newlyFetched: body.newlyFetched, totalStored: body.totalStored, pageStats: body.stats });
   return asArray(body.data);
 }
 

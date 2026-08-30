@@ -376,13 +376,20 @@ app.get('/api/my/transactions', async (req, res) => {
     // Only pages back as far as needed: stops at the first already-known
     // transaction if we have a snapshot (fast repeat loads), or paginates
     // the full requested window if this user has never been fetched
-    // before (unavoidably slower — nothing to skip yet).
+    // before (unavoidably slower — nothing to skip yet). maxPages capped
+    // at 40 (was 200) — that was letting a stuck/misbehaving fetch run
+    // for minutes; 40 pages × 50/page = 2000 transactions is already a
+    // lot for one person, and `stats` below shows exactly why it stopped
+    // so a real problem is visible instead of just "it's slow".
+    const stats = {};
     const newItems = await warera.queryUserTransactions(userId, {
       knownIds: existingIds.size > 0 ? existingIds : null,
       oldestMs,
-      maxPages: 200,
+      maxPages: 40,
       pageSize: 50,
+      stats,
     });
+    console.log(`my-transactions for ${userId}:`, stats);
 
     // Merge, dedupe, and keep a slightly wider rolling window than
     // requested (5 weeks) so switching the weeks dropdown to something
@@ -409,7 +416,7 @@ app.get('/api/my/transactions', async (req, res) => {
     });
 
     myTxCache.set(cacheKey, { data: forDisplay, expiresAt: Date.now() + MY_TX_CACHE_TTL_MS });
-    res.json({ ok: true, data: forDisplay, cached: false, newlyFetched: newItems.length, totalStored: trimmed.length });
+    res.json({ ok: true, data: forDisplay, cached: false, newlyFetched: newItems.length, totalStored: trimmed.length, stats });
   } catch (err) {
     console.error(err);
     res.status(502).json({ ok: false, error: err.message });
