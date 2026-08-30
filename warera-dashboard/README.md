@@ -338,6 +338,40 @@ currently silent — no on-screen warning when it happens.
   case cards' "your strategy" row updates live from the same already-collected data,
   no refetch.
 
+## My ROI tab
+
+A real personal transaction tracker — confirmed via live browser DevTools capture to
+work with actually-filtered, complete per-user data, unlike Craft ROI/Cases' passive
+sampling of the whole game.
+
+- **How the userId filter got confirmed working, when every other filter tested in
+  this project wasn't**: `transaction.getPaginatedTransactions` genuinely respects
+  `userId` — but only via a specific request shape (POST, plain JSON body
+  `{ "0": { direction, limit, userId, ... } }`, `batch=1`) that nothing earlier in
+  this project had tried; every prior attempt used a GET-based shape instead. Found by
+  capturing the real request WarEra's own in-game "Transactions" page makes (at
+  `/user/<id>/transactions`), via DevTools Network tab, then reproducing it
+  server-side. That page's own requests go to `api4.warera.io`, which explicitly
+  rejects API-token auth ("Use api2.warera.io") — so this app sends the same
+  confirmed request shape to `api2.warera.io` instead, which does accept the token.
+  `queryPost()` and `queryUserTransactions()` in `lib/warera.js` implement this.
+- **This means real, complete history is achievable — not just passive sampling.**
+  `/api/my/transactions` pages directly through one user's own transactions using
+  this working filter, going back as far as requested (up to 4 weeks by default) in
+  one efficient, targeted fetch — not the general collector's approach of sampling
+  everything and hoping.
+- **Cash-flow direction ("seller receives, buyer pays") is confirmed for item/trading
+  sales specifically, assumed (not independently verified) for other types** like
+  wages or donations, since they share the identical `buyerId`/`sellerId` shape but
+  haven't been checked one-by-one the way item sales were.
+- **Crafting, Dismantling, and Case Opening show counts only, no cash figures** —
+  those records don't carry a `money` field (they're material/loot events, not
+  currency transfers), so this tab is honest about that rather than inventing a
+  monetary value for them. Correlating their real cost/value against Craft ROI's or
+  Cases' pricing data would be a reasonable future extension, not attempted yet.
+- No account/login system — you paste in your own user ID (found in your profile's
+  URL) each time; nothing is stored server-side beyond a brief 3-minute cache per ID.
+
 ## Disclaimer
 
 Unofficial, community-built, not affiliated with WarEra. Read-only — this never writes

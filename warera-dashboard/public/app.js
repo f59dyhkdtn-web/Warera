@@ -1134,6 +1134,144 @@ async function renderCasesTab() {
   }
 }
 
+// ---- My ROI (personal transaction tracker) --------------------------------
+
+// Confirmed real via live browser DevTools capture + server-side testing
+// (not guessed): every field a transaction record can carry.
+const MY_TX_TYPE_LABELS = {
+  itemMarket: 'Equipment/Item Market',
+  trading: 'Trading (raw goods)',
+  wage: 'Wages',
+  donation: 'Donations',
+  articleTip: 'Article Tips',
+  applicationFee: 'Application Fees',
+  craftItem: 'Crafting',
+  dismantleItem: 'Dismantling',
+  openCase: 'Case Openings',
+  battleLoot: 'Battle Loot',
+};
+
+/**
+ * Turns one raw transaction into this user's perspective: how much money
+ * moved, and which direction. Consistent across every type observed so
+ * far (itemMarket, trading, wage all share the identical buyerId/sellerId
+ * shape): the seller receives money, the buyer pays it — confirmed for
+ * item/trading sales specifically; assumed (not independently verified)
+ * to extend the same way to wage/donation/etc., since nothing suggests
+ * those use a different convention, but it hasn't been directly checked
+ * per type the way item sales were.
+ */
+function classifyMyTransaction(tx, userId) {
+  const isBuyer = tx.buyerId === userId;
+  const isSeller = tx.sellerId === userId;
+  const money = Number(tx.money);
+  const hasMoney = Number.isFinite(money);
+  const cashFlow = hasMoney ? (isSeller ? money : isBuyer ? -money : 0) : 0;
+
+  return {
+    type: tx.transactionType,
+    itemCode: tx.itemCode ?? null,
+    resultItemCode: tx.item?.code ?? null,
+    quantity: Number(tx.quantity) || 1,
+    money: hasMoney ? money : null,
+    cashFlow, // + = income to this user, - = expense, 0 = no cash (material-only event)
+    timestampMs: tx.createdAt ? new Date(tx.createdAt).getTime() : null,
+  };
+}
+
+async function fetchMyTransactions(userId, weeks) {
+  const res = await fetch(`/api/my/transactions?userId=${encodeURIComponent(userId)}&weeks=${weeks}`);
+  const body = await res.json();
+  if (!res.ok || body.ok === false) throw new Error(body.error || 'Failed to load your transactions');
+  return asArray(body.data);
+}
+
+function renderMyRoi(parsed, weeks) {
+  const totalIncome = parsed.reduce((s, tx) => s + Math.max(tx.cashFlow, 0), 0);
+  const totalExpense = parsed.reduce((s, tx) => s + Math.max(-tx.cashFlow, 0), 0);
+  const net = totalIncome - totalExpense;
+
+  $('#myRoiSummary').innerHTML = `
+    <div class="myroi-summary-grid">
+      <div class="myroi-summary-card">
+        <span class="case-stat__label">Total earned</span>
+        <span class="myroi-summary-card__value up">+${fmtNum(totalIncome)}</span>
+      </div>
+      <div class="myroi-summary-card">
+        <span class="case-stat__label">Total spent</span>
+        <span class="myroi-summary-card__value down">-${fmtNum(totalExpense)}</span>
+      </div>
+      <div class="myroi-summary-card">
+        <span class="case-stat__label">Net (last ${weeks}w)</span>
+        <span class="myroi-summary-card__value ${net >= 0 ? 'up' : 'down'}">${net >= 0 ? '+' : ''}${fmtNum(net)}</span>
+      </div>
+    </div>
+  `;
+
+  const byType = new Map();
+  parsed.forEach((tx) => {
+    if (!byType.has(tx.type)) byType.set(tx.type, { count: 0, income: 0, expense: 0 });
+    const g = byType.get(tx.type);
+    g.count += 1;
+    if (tx.cashFlow > 0) g.income += tx.cashFlow;
+    if (tx.cashFlow < 0) g.expense += -tx.cashFlow;
+  });
+  const rows = [...byType.entries()].sort((a, b) => b[1].count - a[1].count);
+
+  $('#myRoiBreakdown').innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Type</th><th>Count</th><th>Income</th><th>Expense</th><th>Net</th></tr></thead>
+        <tbody>
+          ${rows
+            .map(([type, g]) => {
+              const rowNet = g.income - g.expense;
+              return `
+              <tr>
+                <td>${MY_TX_TYPE_LABELS[type] || type}${g.income === 0 && g.expense === 0 ? ' <span class="case-sample-note" style="display:inline;">(no cash — materials only)</span>' : ''}</td>
+                <td class="num">${g.count}</td>
+                <td class="num ${g.income > 0 ? 'up' : ''}">${g.income > 0 ? '+' + fmtNum(g.income) : '—'}</td>
+                <td class="num ${g.expense > 0 ? 'down' : ''}">${g.expense > 0 ? '-' + fmtNum(g.expense) : '—'}</td>
+                <td class="num ${g.income === 0 && g.expense === 0 ? '' : rowNet >= 0 ? 'up' : 'down'}">${g.income === 0 && g.expense === 0 ? '—' : `${rowNet >= 0 ? '+' : ''}${fmtNum(rowNet)}`}</td>
+              </tr>
+            `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadMyRoi() {
+  const userId = $('#myUserIdInput').value.trim();
+  const weeks = Number($('#myWeeksSelect').value);
+  const note = $('#myRoiNote');
+
+  if (!userId) {
+    note.textContent = "Enter your WarEra user ID above — it's the part after /user/ in your own profile's URL.";
+    return;
+  }
+
+  $('#myRoiSummary').innerHTML = '<p class="empty-state">Loading your transactions…</p>';
+  $('#myRoiBreakdown').innerHTML = '';
+  note.textContent = '';
+
+  try {
+    const raw = await fetchMyTransactions(userId, weeks);
+    console.log('my transactions raw payload (first 3):', raw.slice(0, 3));
+    const parsed = raw.map((tx) => classifyMyTransaction(tx, userId));
+    renderMyRoi(parsed, weeks);
+    note.textContent =
+      `${raw.length} transactions loaded, going back up to ${weeks} week${weeks === 1 ? '' : 's'}. ` +
+      `Cash flow ("seller receives, buyer pays") is confirmed for item/trading sales — assumed, not ` +
+      `independently verified, for wages/donations/etc. Crafting/Dismantling/Case Opening rows show ` +
+      `counts only (no cash field on those records) — they're material events, not money transfers.`;
+  } catch (err) {
+    $('#myRoiSummary').innerHTML = `<p class="empty-state">Failed to load: ${err.message}</p>`;
+  }
+}
+
 // ---- Wire up -------------------------------------------------------------
 
 function init() {
@@ -1194,6 +1332,7 @@ function init() {
     caseDataCache = null;
     renderCasesTab();
   });
+  $('#myRoiLoad').addEventListener('click', loadMyRoi);
   $$('#casesTimeFilter button').forEach((btn) => {
     btn.addEventListener('click', () => {
       casesHoursWindow = Number(btn.dataset.hours);

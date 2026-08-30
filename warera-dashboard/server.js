@@ -313,6 +313,37 @@ app.get('/api/craft/debug-my-transactions', async (req, res) => {
   }
 });
 
+// GET /api/my/transactions?userId=X&weeks=4
+// Real per-user transaction history — the confirmed working userId
+// filter (see lib/warera.js queryPost/queryUserTransactions) means this
+// is a direct, efficient fetch of just this user's own activity, not a
+// passive sample of the whole game. Cached briefly per user so switching
+// between tabs or re-rendering doesn't re-paginate every time.
+const myTxCache = new Map(); // userId -> { data, expiresAt }
+const MY_TX_CACHE_TTL_MS = 3 * 60_000;
+
+app.get('/api/my/transactions', async (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) return res.status(400).json({ ok: false, error: 'userId query param required' });
+  const weeks = req.query.weeks ? Number(req.query.weeks) : 4;
+  const cacheKey = `${userId}:${weeks}`;
+
+  const cached = myTxCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return res.json({ ok: true, data: cached.data, cached: true });
+  }
+
+  try {
+    const oldestMs = Date.now() - weeks * 7 * 24 * 60 * 60 * 1000;
+    const items = await warera.queryUserTransactions(userId, { oldestMs, maxPages: 200, pageSize: 50 });
+    myTxCache.set(cacheKey, { data: items, expiresAt: Date.now() + MY_TX_CACHE_TTL_MS });
+    res.json({ ok: true, data: items, cached: false });
+  } catch (err) {
+    console.error(err);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 // ---- Rankings ---------------------------------------------------------------
 
 // GET /api/rankings?type=userWealth&limit=50

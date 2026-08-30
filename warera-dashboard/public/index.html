@@ -25,6 +25,7 @@
 <nav class="tabs" id="tabs">
   <button class="tab is-active" data-tab="craft">Craft ROI</button>
   <button class="tab" data-tab="cases">Cases</button>
+  <button class="tab" data-tab="myroi">My ROI</button>
 </nav>
 
 <main class="panels">
@@ -130,6 +131,30 @@
     </div>
 
     <p class="panel__note" id="casesNote"></p>
+  </section>
+
+  <!-- MY ROI -->
+  <section class="panel" id="panel-myroi">
+    <div class="panel__header">
+      <h2>My ROI</h2>
+      <div class="panel__controls">
+        <input type="text" id="myUserIdInput" placeholder="Your WarEra user ID" style="width: 220px;" />
+        <select id="myWeeksSelect">
+          <option value="1">1 week</option>
+          <option value="2">2 weeks</option>
+          <option value="4" selected>4 weeks</option>
+        </select>
+        <button id="myRoiLoad" class="btn">Load</button>
+      </div>
+    </div>
+
+    <div id="myRoiSummary"></div>
+    <div id="myRoiBreakdown"></div>
+
+    <p class="panel__note" id="myRoiNote">
+      Enter your WarEra user ID above — it's the part after <code>/user/</code> in your own profile's URL
+      (e.g. <code>app.warera.io/user/THIS_PART/transactions</code>).
+    </p>
   </section>
 
 </main>

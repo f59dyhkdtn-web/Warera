@@ -297,4 +297,71 @@ async function queryPaginated(procedure, baseInput, opts = {}) {
   return all;
 }
 
-module.exports = { query, queryPaginated, PRIMARY_BASE_URL, GATEWAY_BASE_URL, CACHE_TTL_MS };
+/**
+ * POST-based query — confirmed via live browser DevTools capture against
+ * api4.warera.io (session-cookie auth there) and verified server-side
+ * against api2.warera.io (our API-key auth) specifically for
+ * transaction.getPaginatedTransactions: a plain (non-superjson) JSON
+ * body { "0": { ...input } }, batch=1 in the URL. Unlike the GET-based
+ * query() above, THIS request shape genuinely respects a userId filter —
+ * confirmed by every returned record actually having that user's ID as
+ * buyer or seller, unlike every GET-based attempt at the same filter.
+ */
+async function queryPost(procedure, input, opts = {}) {
+  await takeToken();
+  const base = opts.baseUrl ?? BASE_URL;
+  const url = `${base}/${procedure}?batch=1`;
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    Origin: 'https://app.warera.io',
+  };
+  if (WARERA_API_KEY) headers['X-API-Key'] = WARERA_API_KEY;
+
+  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ 0: input }) });
+  if (!res.ok) throw new Error(`WarEra API ${res.status} for ${procedure} (POST)`);
+  const body = await res.json();
+  return unwrapResult(body);
+}
+
+/**
+ * Pages through ONE specific user's own transaction history — efficient
+ * and complete, since userId genuinely filters server-side here (see
+ * queryPost above), unlike the general background collector which has
+ * to passively sample everything because no filter works for it. Stops
+ * once either the cursor runs out or items get older than `oldestMs`.
+ */
+async function queryUserTransactions(userId, opts = {}) {
+  const oldestMs = opts.oldestMs;
+  const maxPages = opts.maxPages ?? 200;
+  const pageSize = opts.pageSize ?? 50;
+
+  const all = [];
+  let cursor;
+  for (let page = 0; page < maxPages; page += 1) {
+    const input = { direction: 'forward', limit: pageSize, userId };
+    if (cursor !== undefined) input.cursor = cursor;
+
+    const data = await queryPost('transaction.getPaginatedTransactions', input);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (items.length === 0) break;
+    all.push(...items);
+
+    cursor = data?.nextCursor;
+
+    if (oldestMs !== undefined) {
+      const timestamps = items
+        .map((it) => (it.createdAt ? new Date(it.createdAt).getTime() : NaN))
+        .filter(Number.isFinite);
+      const oldestOnPage = timestamps.length ? Math.min(...timestamps) : NaN;
+      if (Number.isFinite(oldestOnPage) && oldestOnPage < oldestMs) break;
+    }
+
+    if (!cursor) break;
+  }
+  return all;
+}
+
+module.exports = { query, queryPaginated, queryPost, queryUserTransactions, PRIMARY_BASE_URL, GATEWAY_BASE_URL, CACHE_TTL_MS };

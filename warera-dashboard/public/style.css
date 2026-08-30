@@ -916,3 +916,29 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
   align-items: center;
   gap: 8px;
 }
+
+/* ---------- My ROI ---------- */
+
+.myroi-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.myroi-summary-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.myroi-summary-card__value {
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+}
