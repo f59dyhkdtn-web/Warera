@@ -271,6 +271,12 @@ scrap everything / optimal / your strategy" comparison the reference community t
   no separate pricing logic, so improvements to Craft ROI's accuracy carry over here
   automatically. This is the one part of the calculation still bounded by real
   collected sales, same as Craft ROI itself.
+- **Has its own time-window selector, independent of Craft ROI's.** Defaults to 24h,
+  goes up to 7d (the full retention window). Same window+fallback behavior as Craft
+  ROI (prefers a sale within the window, falls back to the most recent sale further
+  back if none) — just a separate `casesHoursWindow` value, since you might
+  reasonably want a faster-moving window on Craft ROI while Cases uses a steadier one
+  for a buy/don't-buy decision, or vice versa.
 - **`openCase` and `dismantleItem` transactions are still collected** in the
   background (alongside `itemMarket` sales), but only informationally now, logged to
   the console — not required for the tab to show real numbers, since odds and scrap

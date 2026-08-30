@@ -830,15 +830,15 @@ function scrapValueFor(rarity, materialPrices) {
   return cost.scraps * materialPrices.scraps;
 }
 
-function computeSellValue(marketTx, rarity, slot) {
-  const s = statsFor(marketTx, marketTx, rarity, slot, null);
+function computeSellValue(windowedTx, fullTx, rarity, slot) {
+  const s = statsFor(windowedTx, fullTx, rarity, slot, null);
   return s.avgPrice;
 }
 
-function computeCaseEV(marketTx, materialPrices) {
+function computeCaseEV(windowedTx, fullTx, materialPrices) {
   const outcomes = theoreticalOutcomeOdds().map((o) => ({
     ...o,
-    sellValue: computeSellValue(marketTx, o.rarity, o.slot),
+    sellValue: computeSellValue(windowedTx, fullTx, o.rarity, o.slot),
     scrapValue: scrapValueFor(o.rarity, materialPrices),
   }));
 
@@ -874,6 +874,10 @@ function computeCaseEV(marketTx, materialPrices) {
 let caseDataCache = null;
 const customStrategy = {}; // rarity -> 'sell' | 'scrap'
 RARITIES.forEach((r) => { customStrategy[r] = 'sell'; });
+// Independent from Craft ROI's own recency controls — you might reasonably
+// want a faster-moving 1h view on Craft ROI while Cases uses a steadier
+// 24h+ window for a "should I buy this" decision, or vice versa.
+let casesHoursWindow = 24;
 
 function caseStrategyRow(label, gross, net, starred) {
   const netCls = net === null ? '' : net >= 0 ? 'up' : 'down';
@@ -890,8 +894,9 @@ function renderCaseCards() {
   const grid = $('#caseGrid');
   if (!caseDataCache) return;
   const { priceRows, materialPrices, marketTx } = caseDataCache;
-  const ev = computeCaseEV(marketTx, materialPrices); // same distribution for every case — only price differs
-  const sellSampleTotal = ev.outcomes.reduce((s, o) => s + (statsFor(marketTx, marketTx, o.rarity, o.slot, null).count || 0), 0);
+  const windowedTx = withinWindow(marketTx, casesHoursWindow);
+  const ev = computeCaseEV(windowedTx, marketTx, materialPrices); // same distribution for every case — only price differs
+  const sellSampleTotal = ev.outcomes.reduce((s, o) => s + (statsFor(windowedTx, marketTx, o.rarity, o.slot, null).count || 0), 0);
 
   grid.innerHTML = priceRows
     .map((row) => {
@@ -929,7 +934,7 @@ function renderCaseCards() {
               ${caseStrategyRow('Open → your strategy', ev.evCustom, netCustom, false)}
             </tbody>
           </table>
-          <p class="case-sample-note">Odds and scrap value: confirmed in-game formulas. Sell values: ${sellSampleTotal} real equipment sales across all 36 outcomes (shared with Craft ROI).</p>
+          <p class="case-sample-note">Odds and scrap value: confirmed in-game formulas. Sell values: ${sellSampleTotal} real equipment sales from the last ${casesHoursWindow}h (falls back further back per outcome if the window has none) across all 36 outcomes.</p>
         </div>
       `;
     })
@@ -1061,6 +1066,14 @@ function init() {
   $('#casesRefresh').addEventListener('click', () => {
     caseDataCache = null;
     renderCasesTab();
+  });
+  $$('#casesTimeFilter button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      casesHoursWindow = Number(btn.dataset.hours);
+      $$('#casesTimeFilter button').forEach((b) => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      renderCaseCards(); // recompute only — data's already cached, no refetch needed
+    });
   });
 
   renderCraftRoi();
