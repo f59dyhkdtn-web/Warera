@@ -289,6 +289,31 @@ app.get('/api/craft/debug', async (req, res) => {
   }
 });
 
+// GET /api/craft/debug-my-transactions?userId=X
+// Tests whether api4.warera.io's transaction.getPaginatedTransactions —
+// confirmed via live browser DevTools capture to genuinely filter by
+// userId, unlike api2's version of the same procedure name — also works
+// when called server-side with our existing WARERA_API_KEY, instead of
+// requiring the browser session cookie it appeared to rely on in-game.
+// Confirmed request shape from that capture: POST with a plain (not
+// superjson-wrapped) JSON body { "0": { direction, limit, userId, ... } },
+// batch=1 in the URL. Response likewise unwrapped: { "0": { result: {
+// data: { items, nextCursor } } } }.
+app.get('/api/craft/debug-my-transactions', async (req, res) => {
+  if (!req.query.userId) return res.status(400).json({ ok: false, error: 'userId query param required' });
+  try {
+    const body = JSON.stringify({ 0: { direction: 'forward', limit: 5, userId: req.query.userId } });
+    const url = 'https://api4.warera.io/trpc/transaction.getPaginatedTransactions?batch=1';
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (process.env.WARERA_API_KEY) headers['X-API-Key'] = process.env.WARERA_API_KEY;
+    const upstream = await fetch(url, { method: 'POST', headers, body });
+    const text = await upstream.text();
+    res.status(200).json({ ok: true, upstreamStatus: upstream.status, upstreamOk: upstream.ok, body: text });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 // ---- Rankings ---------------------------------------------------------------
 
 // GET /api/rankings?type=userWealth&limit=50
