@@ -203,21 +203,22 @@ async function getMaterialPrices() {
  * `price` field — no side/type field needed, the two books are already
  * split out.
  */
-async function getOrderBookPrice(itemCode, fallbackPrice) {
+async function getOrderBookPrice(itemCode, fallbackPrice, sideOverride) {
+  const side = sideOverride ?? priceSide;
   try {
     const res = await fetch(`/api/market/orders?item=${itemCode}`);
     const body = await res.json();
     if (!res.ok || body.ok === false) throw new Error(body.error || 'orders fetch failed');
 
-    const key = priceSide === 'bid' ? 'buyOrders' : 'sellOrders';
+    const key = side === 'bid' ? 'buyOrders' : 'sellOrders';
     const orders = Array.isArray(body.data?.[key]) ? body.data[key] : [];
     const prices = orders.map((o) => Number(o.price)).filter(Number.isFinite);
 
     if (prices.length === 0) {
-      console.warn(`no ${priceSide} orders found for ${itemCode} — using reference price instead`);
+      console.warn(`no ${side} orders found for ${itemCode} — using reference price instead`);
       return fallbackPrice;
     }
-    return priceSide === 'bid' ? Math.max(...prices) : Math.min(...prices);
+    return side === 'bid' ? Math.max(...prices) : Math.min(...prices);
   } catch (err) {
     console.warn(`order-book fetch failed for ${itemCode}, falling back to reference price:`, err.message);
     return fallbackPrice;
@@ -824,10 +825,26 @@ function theoreticalOutcomeOdds() {
  * the scraps used to craft that rarity (100%) and NO steel. Uses the same
  * CRAFT_COST table Craft ROI already relies on, so the two stay in sync.
  */
-function scrapValueFor(rarity, materialPrices) {
+function scrapValueFor(rarity, scrapsBidPrice) {
   const cost = CRAFT_COST[rarity];
-  if (!cost || !Number.isFinite(materialPrices.scraps)) return null;
-  return cost.scraps * materialPrices.scraps;
+  if (!cost || !Number.isFinite(scrapsBidPrice)) return null;
+  // Scrapyard upgrade (0 = none, 1-5 = confirmed 1%-5% bonus scraps from
+  // dismantling) — applied unrounded, e.g. level 4 on a Common (6 base
+  // scraps) gives 6 × 1.04 = 6.24, not rounded to 6.
+  const bonusMultiplier = 1 + scrapyardLevel / 100;
+  return cost.scraps * bonusMultiplier * scrapsBidPrice;
+}
+
+async function getScrapsBidPrice() {
+  const data = await api('/api/market/prices');
+  const rows = marketRowsFrom(data);
+  const referenceRow = rows.find((r) => r.item === 'scraps');
+  const referencePrice = referenceRow ? referenceRow.price : null;
+  // Always Bid here, regardless of Craft ROI's Ask/Bid toggle — scrap
+  // value represents scraps you're receiving and plan to sell, so the
+  // price you'd actually realize is what buyers are offering (Bid), not
+  // what it'd cost to buy scraps yourself (Ask).
+  return getOrderBookPrice('scraps', referencePrice, 'bid');
 }
 
 function computeSellValue(windowedTx, fullTx, rarity, slot) {
@@ -835,11 +852,11 @@ function computeSellValue(windowedTx, fullTx, rarity, slot) {
   return s.avgPrice;
 }
 
-function computeCaseEV(windowedTx, fullTx, materialPrices) {
+function computeCaseEV(windowedTx, fullTx, scrapsBidPrice) {
   const outcomes = theoreticalOutcomeOdds().map((o) => ({
     ...o,
     sellValue: computeSellValue(windowedTx, fullTx, o.rarity, o.slot),
-    scrapValue: scrapValueFor(o.rarity, materialPrices),
+    scrapValue: scrapValueFor(o.rarity, scrapsBidPrice),
   }));
 
   function weightedEV(valueFn) {
@@ -892,6 +909,9 @@ RARITIES.forEach((r) => { customStrategy[r] = DEFAULT_STRATEGY[r]; });
 // want a faster-moving 1h view on Craft ROI while Cases uses a steadier
 // 24h+ window for a "should I buy this" decision, or vice versa.
 let casesHoursWindow = 24;
+// 0 = no Scrapyard upgrade, 1-5 = confirmed 1%-5% bonus scraps from
+// dismantling. Defaults to 0 (no assumed upgrade) — set to your actual level.
+let scrapyardLevel = 0;
 
 function caseStrategyRow(label, gross, net, starred) {
   const netCls = net === null ? '' : net >= 0 ? 'up' : 'down';
@@ -907,9 +927,9 @@ function caseStrategyRow(label, gross, net, starred) {
 function renderCaseCards() {
   const grid = $('#caseGrid');
   if (!caseDataCache) return;
-  const { priceRows, materialPrices, marketTx } = caseDataCache;
+  const { priceRows, scrapsBidPrice, marketTx } = caseDataCache;
   const windowedTx = withinWindow(marketTx, casesHoursWindow);
-  const ev = computeCaseEV(windowedTx, marketTx, materialPrices); // same distribution for every case — only price differs
+  const ev = computeCaseEV(windowedTx, marketTx, scrapsBidPrice); // same distribution for every case — only price differs
   const sellSampleTotal = ev.outcomes.reduce((s, o) => s + (statsFor(windowedTx, marketTx, o.rarity, o.slot, null).count || 0), 0);
 
   grid.innerHTML = priceRows
@@ -954,7 +974,7 @@ function renderCaseCards() {
               ${caseStrategyRow('Open → your strategy', ev.evCustom, netCustom, false)}
             </tbody>
           </table>
-          <p class="case-sample-note">Odds and scrap value: confirmed in-game formulas. Sell values: ${sellSampleTotal} real equipment sales from the last ${casesHoursWindow}h (falls back further back per outcome if the window has none) across all 36 outcomes.</p>
+          <p class="case-sample-note">Odds and scrap value: confirmed in-game formulas, scraps priced at Bid (what you'd realize selling them)${scrapyardLevel > 0 ? `, Scrapyard lvl ${scrapyardLevel}: +${scrapyardLevel}% scraps applied` : ', no Scrapyard bonus'}. Sell values: ${sellSampleTotal} real equipment sales from the last ${casesHoursWindow}h (falls back further back per outcome if the window has none) across all 36 outcomes.</p>
         </div>
       `;
     })
@@ -990,9 +1010,9 @@ async function renderCasesTab() {
   grid.innerHTML = '<p class="empty-state">Loading case data…</p>';
 
   try {
-    const [priceRows, materialPrices, caseOpens, dismantles, marketTx] = await Promise.all([
+    const [priceRows, scrapsBidPrice, caseOpens, dismantles, marketTx] = await Promise.all([
       discoverCasePrices(),
-      getMaterialPrices(),
+      getScrapsBidPrice(),
       fetchCaseOpens(),
       fetchDismantles(),
       fetchCraftHistory(),
@@ -1008,13 +1028,15 @@ async function renderCasesTab() {
         </p>
       `;
       note.textContent = '';
-      console.log('material prices checked for case-like keys:', materialPrices);
+      const data = await api('/api/market/prices');
+      console.log('material prices checked for case-like keys:', data);
       return;
     }
 
     console.log('discovered case price entries:', priceRows);
+    console.log('scraps Bid price used for scrap value:', scrapsBidPrice);
     console.log('openCase/dismantleItem observed so far (not required, informational):', { caseOpens: caseOpens.length, dismantles: dismantles.length });
-    caseDataCache = { priceRows, materialPrices, marketTx };
+    caseDataCache = { priceRows, scrapsBidPrice, marketTx };
     renderCaseCards();
     renderStrategyPanel();
 
@@ -1093,6 +1115,14 @@ function init() {
       $$('#casesTimeFilter button').forEach((b) => b.classList.remove('is-active'));
       btn.classList.add('is-active');
       renderCaseCards(); // recompute only — data's already cached, no refetch needed
+    });
+  });
+  $$('#scrapyardFilter button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      scrapyardLevel = Number(btn.dataset.level);
+      $$('#scrapyardFilter button').forEach((b) => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      renderCaseCards(); // pure multiplier — recompute only
     });
   });
 

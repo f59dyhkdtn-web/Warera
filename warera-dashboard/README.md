@@ -267,6 +267,19 @@ scrap everything / optimal / your strategy" comparison the reference community t
   the scraps used to craft that rarity (100%) and confirmed **no steel refund** —
   `scrapValueFor()` reuses the same `CRAFT_COST` table Craft ROI already relies on,
   so the two stay in sync automatically.
+- **Scraps are priced at Bid for scrap value specifically — always, regardless of
+  Craft ROI's Ask/Bid toggle.** `getScrapsBidPrice()` calls `getOrderBookPrice()`
+  with an explicit side override rather than reading the shared `priceSide` global.
+  Reasoning: scrap value represents scraps you're receiving and (per the plan
+  behind this tab) intend to sell — the price actually realized selling something is
+  Bid (what buyers are offering), not Ask (what it'd cost to buy scraps yourself).
+  Craft cost elsewhere keeps using whichever side Craft ROI has selected, since
+  that's a purchase, not a sale.
+- **Scrapyard upgrade** (None / 1-5, buttons next to the time window): a confirmed
+  1-5% bonus to scraps received from dismantling, applied unrounded (e.g. level 4 on
+  a Common's 6 base scraps = 6.24, not rounded to 6). Defaults to None — set it to
+  your actual level. Pure multiplier, so switching it just recomputes from
+  already-cached data, no refetch.
 - **Sell values reuse Craft ROI's existing rarity+slot price data** (`statsFor()`) —
   no separate pricing logic, so improvements to Craft ROI's accuracy carry over here
   automatically. This is the one part of the calculation still bounded by real
