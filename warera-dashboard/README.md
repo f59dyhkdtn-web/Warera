@@ -212,6 +212,12 @@ Only one mode is active at a time — picking one deselects the other. Both mode
 the same underlying calculation, so the rarity cards and breakdown table update to
 match whichever is selected, not just the stat-roll grid.
 
+**"Sales" counts intentionally don't change between 1h/2h/.../24h** — that number is
+always the full ~24h collected total for that row, since a tiny window's sample would
+make the confidence badges misleading. What *does* change with the selected mode is
+how many of those sales actually fed the displayed price — shown as "X used" next to
+the count on rarity cards, and as "24h total / used" in the breakdown table.
+
 ## Disclaimer
 
 Unofficial, community-built, not affiliated with WarEra. Read-only — this never writes

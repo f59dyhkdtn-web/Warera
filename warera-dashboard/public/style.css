@@ -563,6 +563,10 @@ tbody tr:nth-child(3) td:first-child::before { content: '③ '; color: var(--bra
   margin-bottom: 6px;
 }
 
+.used-tag {
+  color: var(--brass);
+}
+
 .rarity-card__pct {
   font-family: var(--display);
   font-size: 28px;

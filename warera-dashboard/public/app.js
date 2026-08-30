@@ -473,12 +473,13 @@ function getStatBuckets(windowedMatches, fullMatches) {
 function statsFor(windowedTx, fullTx, rarity, slot, craftTotal) {
   const windowedMatches = windowedTx.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
   const fullMatches = fullTx.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
-  const count = fullMatches.length; // total sample backing this row, not just the recency window
-  if (count === 0) return { count: 0, avgPrice: null, marginAbs: null, marginPct: null, pProfit: null };
+  const count = fullMatches.length; // total sample backing this row (full ~24h), not just the recency window
+  if (count === 0) return { count: 0, usedCount: 0, avgPrice: null, marginAbs: null, marginPct: null, pProfit: null };
 
   const withStat = fullMatches.filter((tx) => tx.statKey !== null);
   let avgPrice;
   let pProfit;
+  let usedCount;
 
   if (withStat.length > 0) {
     const buckets = getStatBuckets(windowedMatches, fullMatches);
@@ -486,17 +487,23 @@ function statsFor(windowedTx, fullTx, rarity, slot, craftTotal) {
     pProfit = craftTotal !== null
       ? (buckets.filter((b) => b.avg > craftTotal).length / buckets.length) * 100
       : null;
+    // How many individual sales actually fed the price above — as
+    // opposed to `count`, which is every sale ever collected for this
+    // row regardless of whether it was used (see the "sales" vs "used"
+    // distinction surfaced in the UI).
+    usedCount = buckets.reduce((s, b) => s + b.usedCount, 0);
   } else {
     // No stat-roll data at all for this slot — fall back to a plain
     // average, preferring the recency window if it has any sales.
     const priceSource = windowedMatches.length > 0 ? windowedMatches : fullMatches;
     avgPrice = priceSource.reduce((s, tx) => s + tx.price, 0) / priceSource.length;
     pProfit = craftTotal !== null ? (priceSource.filter((tx) => tx.price > craftTotal).length / priceSource.length) * 100 : null;
+    usedCount = priceSource.length;
   }
 
   const marginAbs = avgPrice !== null && craftTotal !== null ? avgPrice - craftTotal : null;
   const marginPct = marginAbs !== null && craftTotal > 0 ? (marginAbs / craftTotal) * 100 : null;
-  return { count, avgPrice, marginAbs, marginPct, pProfit };
+  return { count, usedCount, avgPrice, marginAbs, marginPct, pProfit };
 }
 
 function confidenceLabel(count) {
@@ -519,7 +526,8 @@ function confidenceLabel(count) {
 function weightedSlotCombine(slotStats) {
   const withData = slotStats.filter((s) => s.avgPrice !== null);
   const totalCount = slotStats.reduce((sum, s) => sum + s.count, 0);
-  if (withData.length === 0) return { count: totalCount, avgPrice: null, pProfit: null };
+  const totalUsedCount = slotStats.reduce((sum, s) => sum + (s.usedCount ?? 0), 0);
+  if (withData.length === 0) return { count: totalCount, usedCount: totalUsedCount, avgPrice: null, pProfit: null };
 
   const totalOdds = withData.reduce((sum, s) => sum + s.odds, 0);
   const avgPrice = withData.reduce((sum, s) => sum + s.avgPrice * s.odds, 0) / totalOdds;
@@ -529,7 +537,7 @@ function weightedSlotCombine(slotStats) {
     ? withProfit.reduce((sum, s) => sum + s.pProfit * s.odds, 0) / withProfit.reduce((sum, s) => sum + s.odds, 0)
     : null;
 
-  return { count: totalCount, avgPrice, pProfit };
+  return { count: totalCount, usedCount: totalUsedCount, avgPrice, pProfit };
 }
 
 function renderRarityGrid(windowedTx, fullTx, prices) {
@@ -563,7 +571,7 @@ function renderRarityGrid(windowedTx, fullTx, prices) {
             <span class="rarity-chip rarity-${r.rarity}">${r.rarity}</span>
             <span class="confidence-chip confidence-${conf.cls}">${conf.label}</span>
           </div>
-          <div class="rarity-card__sample">${r.count} sale${r.count === 1 ? '' : 's'}</div>
+          <div class="rarity-card__sample">${r.count} sale${r.count === 1 ? '' : 's'} (24h) <span class="used-tag">· ${r.usedCount} used</span></div>
           <div class="rarity-card__pct ${pctCls}">${pctText}</div>
           <div class="rarity-card__margin">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)} per craft` : '—'}</div>
           <div class="rarity-card__foot">
@@ -606,7 +614,7 @@ function renderBreakdown(windowedTx, fullTx, prices) {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Slot</th><th>Odds</th><th>Avg Sale Price</th><th>Margin</th><th>P(profit)</th><th>Sales Seen</th></tr>
+          <tr><th>Slot</th><th>Odds</th><th>Avg Sale Price</th><th>Margin</th><th>P(profit)</th><th>Sales (24h / used)</th></tr>
         </thead>
         <tbody>
           ${rows
@@ -618,7 +626,7 @@ function renderBreakdown(windowedTx, fullTx, prices) {
               <td class="num">${r.avgPrice !== null ? fmtNum(r.avgPrice) : '—'}</td>
               <td class="num ${r.marginAbs === null ? '' : r.marginAbs >= 0 ? 'up' : 'down'}">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)}` : '—'}</td>
               <td class="num">${r.pProfit !== null ? r.pProfit.toFixed(1) + '%' : '—'}</td>
-              <td class="num">${r.count}</td>
+              <td class="num">${r.count} / ${r.usedCount}</td>
             </tr>
           `
             )
