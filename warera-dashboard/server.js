@@ -82,6 +82,60 @@ app.get('/api/market/transactions', (req, res) => {
 const txStore = new Map(); // _id -> transaction record
 const STORE_WINDOW_MS = 26 * 60 * 60 * 1000; // slightly over 24h; trimmed below
 const STORE_MAX_SIZE = 50_000;
+// ---- Optional persistence (Upstash Redis) --------------------------------
+// Without these two env vars, everything below still works exactly as
+// before — the collected dataset just resets to zero on every restart or
+// redeploy. With them set, txStore survives restarts: loaded from Upstash
+// on boot, snapshotted back every 5 minutes, and flushed once more on
+// SIGTERM (the signal Render sends right before killing the old instance
+// during a redeploy) to minimize the gap.
+const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/$/, '');
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const PERSIST_KEY = 'warera_craft_equipment_sales_v1';
+const PERSIST_ENABLED = Boolean(UPSTASH_URL && UPSTASH_TOKEN);
+
+async function persistLoad() {
+  if (!PERSIST_ENABLED) return;
+  try {
+    const res = await fetch(`${UPSTASH_URL}/get/${PERSIST_KEY}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    });
+    const body = await res.json();
+    if (body?.result) {
+      const items = JSON.parse(body.result);
+      for (const item of items) {
+        if (item && item._id) txStore.set(item._id, item);
+      }
+      console.log(`persisted store restored: ${items.length} equipment sales loaded from Upstash`);
+    }
+  } catch (err) {
+    console.error('persist load failed (continuing with an empty store):', err.message);
+  }
+}
+
+async function persistSave() {
+  if (!PERSIST_ENABLED) return;
+  try {
+    const items = [...txStore.values()];
+    await fetch(`${UPSTASH_URL}/set/${PERSIST_KEY}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      body: JSON.stringify(items),
+    });
+  } catch (err) {
+    console.error('persist save failed:', err.message);
+  }
+}
+
+if (PERSIST_ENABLED) {
+  console.log('WARERA persistence: enabled (Upstash) — loading any previously saved data...');
+} else {
+  console.log(
+    'WARERA persistence: not configured (set UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN) — ' +
+    'collected data will reset on every restart or redeploy.'
+  );
+}
+
 let ingestCursor; // undefined = "start from the newest page"
 let ingestTicksSinceResync = 0;
 const RESYNC_EVERY_TICKS = 200; // periodically re-check the newest page so brand-new trades aren't missed
@@ -94,8 +148,14 @@ async function ingestTick() {
     const data = await warera.query('transaction.getPaginatedTransactions', input, { skipCache: true });
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
 
+    // Only equipment market sales are ever used by the frontend (see
+    // parseTransaction in app.js) — filtering here, not just on read,
+    // means wages/case-openings/dismantles/material-trades (~90% of raw
+    // volume) never occupy memory or persistence space at all.
     for (const item of items) {
-      if (item && item._id) txStore.set(item._id, item);
+      if (item && item._id && item.transactionType === 'itemMarket' && item.item?.type === 'equipment') {
+        txStore.set(item._id, item);
+      }
     }
 
     if (txStore.size > STORE_MAX_SIZE) {
@@ -128,13 +188,27 @@ async function ingestTick() {
 // Other tabs (market/rankings/battles) are cached 15-60s so they barely
 // touch this budget — ingestion can safely use nearly all of it.
 const INGEST_INTERVAL_MS = 320;
-setInterval(() => {
-  // Back off when failing repeatedly (e.g. no WARERA_API_KEY set yet)
-  // instead of hammering the API/logs every tick.
-  if (ingestFailures > 3 && ingestFailures % 10 !== 0) return;
+
+async function startIngestion() {
+  await persistLoad(); // resume from a saved snapshot, if one exists, before ticking
+  setInterval(() => {
+    // Back off when failing repeatedly (e.g. no WARERA_API_KEY set yet)
+    // instead of hammering the API/logs every tick.
+    if (ingestFailures > 3 && ingestFailures % 10 !== 0) return;
+    ingestTick();
+  }, INGEST_INTERVAL_MS);
   ingestTick();
-}, INGEST_INTERVAL_MS);
-ingestTick();
+
+  if (PERSIST_ENABLED) {
+    setInterval(persistSave, 5 * 60_000);
+    process.on('SIGTERM', async () => {
+      console.log('SIGTERM received — saving final snapshot before shutdown...');
+      await persistSave();
+      process.exit(0);
+    });
+  }
+}
+startIngestion();
 
 // GET /api/craft/history?hours=24
 // Reads straight from the continuously-growing txStore above — instant,

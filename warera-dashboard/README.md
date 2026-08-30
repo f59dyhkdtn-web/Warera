@@ -57,6 +57,8 @@ Environment variables, all optional:
 | `PORT` | `3000` | Port the dashboard server listens on |
 | `WARERA_API_KEY` | (none) | Your personal WarEra API token — required for Craft ROI's sale-price data, unused everywhere else |
 | `WARERA_API_BASE_URL` | `https://api2.warera.io/trpc/` | Overrides the base URL for every call, if you ever need to point elsewhere |
+| `UPSTASH_REDIS_REST_URL` | (none) | Enables persistence for Craft ROI's collected sales — see below |
+| `UPSTASH_REDIS_REST_TOKEN` | (none) | Paired with the URL above |
 
 Transaction history (Craft ROI's sale prices) will 401 without `WARERA_API_KEY` set —
 that's expected, not a bug. Everything else works with no configuration at all.
@@ -64,6 +66,24 @@ that's expected, not a bug. Everything else works with no configuration at all.
 ```bash
 WARERA_API_KEY=wae_your_token_here npm start
 ```
+
+### Making Craft ROI's data survive redeploys (optional)
+
+By default, Craft ROI's collected sales data lives only in memory — every redeploy,
+and every Render free-tier sleep/wake cycle (sleeps after 15 min idle), resets it to
+zero and it has to rebuild from scratch. Setting `UPSTASH_REDIS_REST_URL` and
+`UPSTASH_REDIS_REST_TOKEN` fixes that: the collected dataset is loaded from a free
+[Upstash](https://upstash.com) Redis database on startup and saved back every 5
+minutes (plus once more right before a redeploy kills the old instance), so restarts
+resume instead of starting over.
+
+1. Sign up at upstash.com (free, no credit card) and create a Redis database.
+2. From that database's page, copy the **REST URL** and **REST Token**.
+3. On Render, add them as environment variables: `UPSTASH_REDIS_REST_URL` and
+   `UPSTASH_REDIS_REST_TOKEN`, then redeploy once to pick them up.
+
+The free tier (500K commands/month, 256MB storage) covers this comfortably — this app
+only writes a handful of times per hour, not per transaction.
 
 ## Project layout
 
