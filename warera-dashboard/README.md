@@ -147,11 +147,14 @@ with one deliberate exception, see "Recency vs completeness" below.
   individual sales would let armor's margin dominate and drown out weapon's true 30%
   share of what a craft actually produces. `weightedSlotCombine()` in `app.js` handles
   this; slots with zero sample are excluded and the remaining odds renormalized.
-- **Material prices are always fetched fresh on render**, not cached client-side
-  indefinitely — an earlier version cached them once per page load, so scraps/steel
-  prices baked into the craft cost could silently go stale even after clicking
-  Refresh. The server already caches `itemTrading.getPrices` for 30s on its own, so
-  fetching fresh every render costs nothing extra while staying accurate.
+- **Material prices come from the real order book, not `itemTrading.getPrices`.**
+  That endpoint turned out to return some other reference number — a live comparison
+  against the actual in-game order book showed it meaningfully off from the price
+  you'd really pay. `getBestAskPrice()` in `app.js` fetches `tradingOrder.getTopOrders`
+  for scraps/steel specifically and uses the cheapest active sell order (what buying
+  right now actually costs), falling back to the reference price only if that fetch
+  fails. This endpoint's response shape isn't independently confirmed either — the
+  raw payload is logged to the console for verification.
 - **Scraps/steel prices can be manually overridden** via the two inputs next to the
   recency controls — useful for checking a specific price point rather than
   whatever's live. Blank means "use live price"; "Reset to live" clears both at once.

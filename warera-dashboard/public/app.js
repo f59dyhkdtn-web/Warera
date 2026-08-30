@@ -298,7 +298,57 @@ async function getMaterialPrices() {
   const rows = marketRowsFrom(data);
   const map = {};
   rows.forEach(({ item, price }) => { map[item] = price; });
+
+  // itemTrading.getPrices (above) turned out to be some other reference
+  // number, not the price you'd actually pay to buy right now — it was
+  // off from the real order book by a meaningful amount. The true cost
+  // to instantly acquire a material is the cheapest active SELL order, so
+  // fetch the real order book for scraps/steel specifically and prefer
+  // that, falling back to the reference price only if the order book
+  // fetch fails or its shape doesn't parse as expected.
+  const [scrapsAsk, steelAsk] = await Promise.all([
+    getBestAskPrice('scraps', map.scraps),
+    getBestAskPrice('steel', map.steel),
+  ]);
+  map.scraps = scrapsAsk;
+  map.steel = steelAsk;
   return map;
+}
+
+/**
+ * Cheapest active sell (ask) order for an item — what you'd actually pay
+ * to buy it right now, as opposed to itemTrading.getPrices' reference
+ * number. tradingOrder.getTopOrders' response shape isn't independently
+ * confirmed, so this logs the raw payload and tries a few plausible field
+ * names for "which side is this order on" and "what's its price" — if the
+ * resulting cost still looks wrong, check that console log for the real
+ * field names.
+ */
+async function getBestAskPrice(itemCode, fallbackPrice) {
+  try {
+    const res = await fetch(`/api/market/orders?item=${itemCode}`);
+    const body = await res.json();
+    if (!res.ok || body.ok === false) throw new Error(body.error || 'orders fetch failed');
+    console.log(`top orders for ${itemCode}:`, body.data);
+
+    const orders = asArray(body.data);
+    const sellOrders = orders.filter((o) => {
+      const side = String(pick(o, ['side', 'type', 'orderType', 'kind'], '')).toLowerCase();
+      return side.includes('sell') || side.includes('ask');
+    });
+    const candidates = (sellOrders.length ? sellOrders : orders)
+      .map((o) => Number(pick(o, ['price', 'unitPrice', 'askPrice', 'sellPrice'], null)))
+      .filter(Number.isFinite);
+
+    if (candidates.length === 0) {
+      console.warn(`no usable sell price found for ${itemCode} in orders response — using reference price instead`);
+      return fallbackPrice;
+    }
+    return Math.min(...candidates);
+  } catch (err) {
+    console.warn(`best-ask fetch failed for ${itemCode}, falling back to reference price:`, err.message);
+    return fallbackPrice;
+  }
 }
 
 // Raw materials/goods trade through the same itemMarket transaction log as
