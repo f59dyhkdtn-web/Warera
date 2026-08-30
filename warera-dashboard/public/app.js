@@ -1180,15 +1180,48 @@ function classifyMyTransaction(tx, userId) {
   };
 }
 
+// Same parsing already used throughout Craft ROI (ARMOR_CODE_PATTERN,
+// WEAPON_NAME_TO_RARITY) — reused here to price a held item at today's
+// average market rate for its rarity+slot.
+function deriveRaritySlot(itemCode) {
+  if (!itemCode) return { rarity: null, slot: null };
+  const armorMatch = itemCode.match(ARMOR_CODE_PATTERN);
+  if (armorMatch) {
+    return {
+      slot: ARMOR_CODE_TO_SLOT[armorMatch[1].toLowerCase()],
+      rarity: RARITIES[Number(armorMatch[2]) - 1] ?? null,
+    };
+  }
+  return { slot: 'Weapon', rarity: WEAPON_NAME_TO_RARITY[itemCode.toLowerCase()] ?? null };
+}
+
+// Builds a "what would this sell for today" estimator from Craft ROI's
+// already-fetched market transaction data — one lookup per rarity+slot,
+// cached, so repeated calls for the same combination are free.
+function buildCurrentValueLookup(marketTx) {
+  const cache = new Map();
+  return (itemCode) => {
+    const { rarity, slot } = deriveRaritySlot(itemCode);
+    if (!rarity || !slot) return null;
+    const key = `${rarity}|${slot}`;
+    if (!cache.has(key)) {
+      cache.set(key, statsFor(marketTx, marketTx, rarity, slot, null).avgPrice);
+    }
+    return cache.get(key);
+  };
+}
+
 /**
  * Follows each individually-crafted item from creation to its eventual
- * outcome (sold or dismantled), using the item's own persistent _id —
- * confirmed real via live console inspection, not assumed. Each craft
- * event actually produces multiple `craftItem` records (one per material
- * consumed — e.g. one for scraps, one for steel), all sharing the same
- * resultItemId, so those get grouped into a single material cost first.
+ * outcome (sold, dismantled, or still held), using the item's own
+ * persistent _id — confirmed real via live console inspection, not
+ * assumed. Each craft event actually produces multiple `craftItem`
+ * records (one per material consumed — e.g. one for scraps, one for
+ * steel), all sharing the same resultItemId, so those get grouped into a
+ * single material cost first. Held items get a "what it's worth today"
+ * estimate via currentValueFor, so they're not just a cost with no value.
  */
-function linkCraftLifecycles(parsed, materialPrices) {
+function linkCraftLifecycles(parsed, materialPrices, currentValueFor) {
   const craftGroups = new Map(); // resultItemId -> { itemCode, materials: [{itemCode, quantity}], craftedAt }
   const saleByItemId = new Map(); // resultItemId -> { money, timestampMs }
   const dismantleByItemId = new Map(); // resultItemId -> timestampMs (item was scrapped instead of sold)
@@ -1216,6 +1249,7 @@ function linkCraftLifecycles(parsed, materialPrices) {
     }, 0);
     const sale = saleByItemId.get(itemId);
     const wasDismantled = dismantleByItemId.has(itemId);
+    const status = sale ? 'sold' : wasDismantled ? 'dismantled' : 'held';
     return {
       itemId,
       itemCode: group.itemCode,
@@ -1224,12 +1258,91 @@ function linkCraftLifecycles(parsed, materialPrices) {
       soldFor: sale ? sale.money : null,
       soldAt: sale ? sale.timestampMs : null,
       wasDismantled,
+      currentValue: status === 'held' ? currentValueFor(group.itemCode) : null,
       profit: sale ? sale.money - cost : null,
-      status: sale ? 'sold' : wasDismantled ? 'dismantled' : 'held', // held = crafted but no matching sale/dismantle found in this window
+      status, // held = crafted but no matching sale/dismantle found in this window
     };
   });
 
   return lifecycles;
+}
+
+/**
+ * Same idea as linkCraftLifecycles, but for openCase events — each case
+ * opened is linked to whatever equipment came out (via the same
+ * resultItemId mechanism) and that item's eventual sale/dismantle/still-
+ * held status. Cost uses today's live case price (from Cases tab's
+ * discoverCasePrices), not the price actually paid for that specific
+ * case at the time — same approximation Craft ROI/Cases already make for
+ * material costs, kept consistent here rather than attempting exact
+ * historical cost tracing.
+ */
+function linkCaseLifecycles(parsed, casePriceMap, currentValueFor) {
+  const saleByItemId = new Map();
+  const dismantleByItemId = new Map();
+  parsed.forEach((tx) => {
+    if (tx.type === 'itemMarket' && tx.resultItemId && tx.cashFlow > 0) {
+      saleByItemId.set(tx.resultItemId, { money: tx.money, timestampMs: tx.timestampMs });
+    }
+    if (tx.type === 'dismantleItem' && tx.resultItemId) {
+      dismantleByItemId.set(tx.resultItemId, tx.timestampMs);
+    }
+  });
+
+  return parsed
+    .filter((tx) => tx.type === 'openCase' && tx.resultItemId)
+    .map((tx) => {
+      const cost = Number.isFinite(casePriceMap[tx.itemCode]) ? casePriceMap[tx.itemCode] : null;
+      const sale = saleByItemId.get(tx.resultItemId);
+      const wasDismantled = dismantleByItemId.has(tx.resultItemId);
+      const status = sale ? 'sold' : wasDismantled ? 'dismantled' : 'held';
+      return {
+        itemId: tx.resultItemId,
+        caseCode: tx.itemCode,
+        itemCode: tx.resultItemCode,
+        openedAt: tx.timestampMs,
+        cost,
+        soldFor: sale ? sale.money : null,
+        wasDismantled,
+        currentValue: status === 'held' ? currentValueFor(tx.resultItemCode) : null,
+        profit: sale && cost !== null ? sale.money - cost : null,
+        status,
+      };
+    });
+}
+
+function dayKeyFrom(timestampMs) {
+  if (!timestampMs) return null;
+  return new Date(timestampMs).toISOString().slice(0, 10); // YYYY-MM-DD, UTC day
+}
+
+/**
+ * Groups lifecycle items (craft or case) by the day they were acquired,
+ * with realized profit (sold + dismantled — dismantled counted at 0
+ * extra realized here since Craft ROI's own scrap-value accounting is
+ * the right place for that, not duplicated here) and mark-to-market
+ * value for anything still held, so a day's full picture — cost sunk,
+ * revenue actually collected, and what's left is currently worth — is
+ * visible even before every item from that day has been resolved.
+ */
+function groupLifecyclesByDay(lifecycles, dateField) {
+  const byDay = new Map();
+  lifecycles.forEach((l) => {
+    const key = dayKeyFrom(l[dateField]) ?? 'Unknown date';
+    if (!byDay.has(key)) byDay.set(key, { day: key, count: 0, soldCount: 0, cost: 0, realized: 0, heldValue: 0, heldCount: 0 });
+    const g = byDay.get(key);
+    g.count += 1;
+    if (Number.isFinite(l.cost)) g.cost += l.cost;
+    if (l.status === 'sold' && Number.isFinite(l.soldFor)) {
+      g.realized += l.soldFor;
+      g.soldCount += 1;
+    }
+    if (l.status === 'held' && Number.isFinite(l.currentValue)) {
+      g.heldValue += l.currentValue;
+      g.heldCount += 1;
+    }
+  });
+  return [...byDay.values()].sort((a, b) => b.day.localeCompare(a.day)); // newest day first
 }
 
 async function fetchMyTransactions(userId, weeks) {
@@ -1240,7 +1353,37 @@ async function fetchMyTransactions(userId, weeks) {
   return asArray(body.data);
 }
 
-function renderMyRoi(parsed, weeks, lifecycles) {
+function dayTableHtml(byDay, itemLabel) {
+  if (byDay.length === 0) return '<p class="empty-state">No data for this window.</p>';
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Day</th><th>${itemLabel}</th><th>Cost</th><th>Realized</th><th>Held value</th><th>Balance</th></tr>
+        </thead>
+        <tbody>
+          ${byDay
+            .map((g) => {
+              const balance = g.realized + g.heldValue - g.cost;
+              return `
+              <tr>
+                <td>${g.day === 'Unknown date' ? g.day : new Date(g.day).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</td>
+                <td class="num">${g.count}${g.heldCount ? ` <span class="case-sample-note" style="display:inline;">(${g.heldCount} held)</span>` : ''}</td>
+                <td class="num down">${g.cost > 0 ? '-' + fmtNum(g.cost) : '—'}</td>
+                <td class="num ${g.realized > 0 ? 'up' : ''}">${g.realized > 0 ? '+' + fmtNum(g.realized) : '—'}</td>
+                <td class="num">${g.heldValue > 0 ? fmtNum(g.heldValue) : '—'}</td>
+                <td class="num ${balance >= 0 ? 'up' : 'down'}">${balance >= 0 ? '+' : ''}${fmtNum(balance)}</td>
+              </tr>
+            `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderMyRoi(parsed, weeks, craftLifecycles, caseLifecycles) {
   const totalIncome = parsed.reduce((s, tx) => s + Math.max(tx.cashFlow, 0), 0);
   const totalExpense = parsed.reduce((s, tx) => s + Math.max(-tx.cashFlow, 0), 0);
   const net = totalIncome - totalExpense;
@@ -1266,15 +1409,15 @@ function renderMyRoi(parsed, weeks, lifecycles) {
   // (sale or dismantle) both fall inside the fetched window get a real
   // profit figure. "Still held" items were crafted but haven't shown up
   // as sold/dismantled yet — genuinely unresolved, not zero.
-  const sold = lifecycles.filter((l) => l.status === 'sold');
-  const dismantled = lifecycles.filter((l) => l.status === 'dismantled');
-  const held = lifecycles.filter((l) => l.status === 'held');
+  const sold = craftLifecycles.filter((l) => l.status === 'sold');
+  const dismantled = craftLifecycles.filter((l) => l.status === 'dismantled');
+  const held = craftLifecycles.filter((l) => l.status === 'held');
   const totalCost = sold.reduce((s, l) => s + l.cost, 0);
   const totalRevenue = sold.reduce((s, l) => s + l.soldFor, 0);
   const craftProfit = totalRevenue - totalCost;
   const heldCost = held.reduce((s, l) => s + l.cost, 0);
 
-  $('#myRoiLifecycle').innerHTML = lifecycles.length
+  $('#myRoiLifecycle').innerHTML = craftLifecycles.length
     ? `
     <h3 class="breakdown-head-title">Craft &rarr; Sell chains</h3>
     <p class="panel__note" style="margin: 0 0 14px;">
@@ -1301,6 +1444,49 @@ function renderMyRoi(parsed, weeks, lifecycles) {
         <span class="myroi-summary-card__value">${held.length}</span>
       </div>
     </div>
+    <h3 class="breakdown-head-title">Craft profit by day</h3>
+    ${dayTableHtml(groupLifecyclesByDay(craftLifecycles, 'craftedAt'), 'Crafted')}
+  `
+    : '';
+
+  // Case → outcome lifecycle: same idea, keyed by when the case was
+  // opened instead of when the item was crafted.
+  const caseSold = caseLifecycles.filter((l) => l.status === 'sold');
+  const caseDismantled = caseLifecycles.filter((l) => l.status === 'dismantled');
+  const caseHeld = caseLifecycles.filter((l) => l.status === 'held');
+  const caseCost = caseSold.reduce((s, l) => s + (l.cost ?? 0), 0);
+  const caseRevenue = caseSold.reduce((s, l) => s + l.soldFor, 0);
+  const caseProfit = caseRevenue - caseCost;
+  const caseHeldCost = caseHeld.reduce((s, l) => s + (l.cost ?? 0), 0);
+
+  $('#myRoiCaseLifecycle').innerHTML = caseLifecycles.length
+    ? `
+    <h3 class="breakdown-head-title">Case &rarr; Sell chains</h3>
+    <p class="panel__note" style="margin: 0 0 14px;">
+      Same idea, for cases: each opened case linked to whatever came out of it and that item's
+      eventual sale or dismantle. Case cost uses today's live case price, not what you paid at the
+      time — same approximation as crafting, for the same reason (exact historical cost isn't tracked).
+    </p>
+    <div class="myroi-summary-grid">
+      <div class="myroi-summary-card">
+        <span class="case-stat__label">Opened &amp; sold</span>
+        <span class="myroi-summary-card__value">${caseSold.length} item${caseSold.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="myroi-summary-card">
+        <span class="case-stat__label">Case &rarr; sell profit</span>
+        <span class="myroi-summary-card__value ${caseProfit >= 0 ? 'up' : 'down'}">${caseProfit >= 0 ? '+' : ''}${fmtNum(caseProfit)}</span>
+      </div>
+      <div class="myroi-summary-card">
+        <span class="case-stat__label">Dismantled instead</span>
+        <span class="myroi-summary-card__value">${caseDismantled.length}</span>
+      </div>
+      <div class="myroi-summary-card">
+        <span class="case-stat__label">Still held (cost: ${fmtNum(caseHeldCost)})</span>
+        <span class="myroi-summary-card__value">${caseHeld.length}</span>
+      </div>
+    </div>
+    <h3 class="breakdown-head-title">Case profit by day</h3>
+    ${dayTableHtml(groupLifecyclesByDay(caseLifecycles, 'openedAt'), 'Opened')}
   `
     : '';
 
@@ -1350,16 +1536,30 @@ async function loadMyRoi() {
   }
 
   $('#myRoiSummary').innerHTML = '<p class="empty-state">Loading your transactions&hellip; first load for a new user pages through your full history and can take a while; repeat loads are fast (only new transactions get fetched).</p>';
+  $('#myRoiLifecycle').innerHTML = '';
+  $('#myRoiCaseLifecycle').innerHTML = '';
   $('#myRoiBreakdown').innerHTML = '';
   note.textContent = '';
 
   try {
-    const [raw, materialPrices] = await Promise.all([fetchMyTransactions(userId, weeks), getMaterialPrices()]);
+    const [raw, materialPrices, marketTx, caseRows] = await Promise.all([
+      fetchMyTransactions(userId, weeks),
+      getMaterialPrices(),
+      fetchCraftHistory(), // real equipment sale prices, reused to value held items at today's market rate
+      discoverCasePrices(),
+    ]);
     console.log('my transactions raw payload (first 3):', raw.slice(0, 3));
+    const casePriceMap = {};
+    caseRows.forEach((r) => { casePriceMap[r.item] = r.price; });
+
     const parsed = raw.map((tx) => classifyMyTransaction(tx, userId));
-    const lifecycles = linkCraftLifecycles(parsed, materialPrices);
-    console.log('craft lifecycles linked:', { total: lifecycles.length, sold: lifecycles.filter((l) => l.status === 'sold').length, held: lifecycles.filter((l) => l.status === 'held').length });
-    renderMyRoi(parsed, weeks, lifecycles);
+    const currentValueFor = buildCurrentValueLookup(marketTx);
+    const craftLifecycles = linkCraftLifecycles(parsed, materialPrices, currentValueFor);
+    const caseLifecycles = linkCaseLifecycles(parsed, casePriceMap, currentValueFor);
+    console.log('craft lifecycles linked:', { total: craftLifecycles.length, sold: craftLifecycles.filter((l) => l.status === 'sold').length, held: craftLifecycles.filter((l) => l.status === 'held').length });
+    console.log('case lifecycles linked:', { total: caseLifecycles.length, sold: caseLifecycles.filter((l) => l.status === 'sold').length, held: caseLifecycles.filter((l) => l.status === 'held').length });
+
+    renderMyRoi(parsed, weeks, craftLifecycles, caseLifecycles);
     note.textContent =
       `${raw.length} transactions loaded, going back up to ${weeks} week${weeks === 1 ? '' : 's'}. ` +
       `Persisted server-side per user, so the next load only fetches what's new since this one — ` +
@@ -1452,6 +1652,11 @@ function init() {
 
   renderCraftRoi();
   renderCasesTab();
+  // Personal, single-user tool — the user ID is pre-filled in the HTML,
+  // so auto-load on page open too rather than requiring a manual click
+  // every visit. Persistence (if Upstash is set up) makes this cheap on
+  // repeat loads.
+  if ($('#myUserIdInput').value.trim()) loadMyRoi();
   refreshTicker();
   setInterval(refreshTicker, 20_000);
   // Only Craft ROI auto-refreshes — its numbers genuinely grow as the

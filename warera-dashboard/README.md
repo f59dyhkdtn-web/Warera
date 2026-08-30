@@ -390,14 +390,31 @@ sampling of the whole game.
   regardless of what's currently selected, so widening the weeks dropdown doesn't
   force a full refetch either. Without Upstash configured, this still works — it's
   just slow every time, like the first load always is.
-- **The background collector was slowed slightly (400ms/tick, from 320ms) to make
-  room for this.** It was continuously using nearly the entire shared rate budget,
-  which meant a first-time My ROI load (up to 200 sequential requests) had to queue
-  behind it. Trades a bit of Craft ROI/Cases collection speed for on-demand
-  requests actually getting a fair share of the budget.
-- No account/login system — you paste in your own user ID (found in your profile's
-  URL) each time; nothing is stored server-side beyond a brief 3-minute cache per ID
-  and (if Upstash is configured) the persisted per-user snapshot described above.
+- **The background collector pauses entirely (not just slows down) while a My ROI
+  request is running**, via a simple `onDemandPriority` flag checked before each
+  ingest tick — giving the on-demand request the full rate budget instead of a fixed
+  slice of it. Was still queuing badly behind the always-on collector even after an
+  earlier attempt at just slowing the collector's own pace (400ms/tick, from 320ms),
+  so this was necessary on top of that, not instead of it.
+- **Day-by-day cohort tables for both crafting and case-opening** ("Craft profit by
+  day" / "Case profit by day"), modeled after a community tool's own tracker: for each
+  day, how many items were crafted/opened, total material/case cost, revenue actually
+  realized from ones sold, mark-to-market value of ones still held (via
+  `buildCurrentValueLookup()`, using Craft ROI's own real rarity+slot sale-price data),
+  and the net balance combining all three. Answers "how much did today's crafts make
+  me" directly, not just an aggregate total across the whole window.
+- **Held items are valued at today's average market price for their rarity+slot**,
+  not zero — an item you crafted but haven't sold yet still has real value, and
+  showing it as "cost with no offsetting value" would understate your position. Same
+  approximation caveat as everywhere else in this app: today's price, not a
+  prediction of what it'll actually sell for.
+- **Personal, single-user defaults**: the user ID input is pre-filled in `index.html`
+  and the tab auto-loads on page open — this is a personal tool, not a multi-user
+  product, so skipping the manual entry step every visit is the right tradeoff. Change
+  the hardcoded ID in `index.html` if you fork this for your own account.
+- No account/login system beyond that pre-filled ID — nothing is stored server-side
+  beyond a brief 3-minute cache per ID and (if Upstash is configured) the persisted
+  per-user snapshot described above.
 
 ## Disclaimer
 
