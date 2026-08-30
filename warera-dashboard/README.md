@@ -170,18 +170,24 @@ with one deliberate exception, see "Recency vs completeness" below.
   ~10 mixed records per page (wages, case openings, dismantles, market sales all
   together) regardless of what's requested. At real game volume, no single request
   could pull a representative sample without timing out. So `server.js` runs a loop
-  (`ingestTick`, starts on boot) that pulls one page every ~700ms indefinitely,
+  (`ingestTick`, starts on boot) that pulls one page every ~320ms indefinitely,
   accumulating equipment sales into an in-memory store keyed by transaction `_id`.
   `/api/craft/history` just reads from that store instantly — no pagination happens
   inside a request anymore.
-- **This means coverage builds up over time, not instantly.** Right after a deploy or
-  a Render free-tier wake-up (sleeps after 15 min idle, which resets the in-memory
-  store), expect the tab to show very little — it only reflects what's been collected
-  since the process started, and cannot retroactively backfill a full day in one shot.
-  The panel note shows real collection status; the tab auto-refreshes every 30s so
-  numbers visibly fill in as more accumulates. If you want durable long-term coverage
-  across restarts, that's a real gap to solve for later (external keep-alive pings, a
-  paid always-on tier, or persisting the store to disk/a DB instead of memory).
+- **Retention is 7 days** (`STORE_WINDOW_MS` in `server.js`), extended from an
+  original 26h specifically so infrequently-traded stat-roll combinations (a specific
+  jet roll that might only sell once every several days) still have a real recent
+  price to fall back on — see "Recency vs completeness" below. Capped at 150,000
+  records; well within both Upstash's free-tier storage and Render's free-tier RAM,
+  since equipment-only filtering already cuts ~90% of raw volume before storage.
+- **Coverage builds up over time, not instantly**, and a restart empties the
+  in-memory store — mitigated two ways, both optional: an UptimeRobot-style keep-alive
+  ping prevents Render's free tier from sleeping (sleeps after 15 min idle, which
+  would otherwise reset collection), and `UPSTASH_REDIS_REST_URL`/`_TOKEN` (see
+  Configuration) persist the store across restarts and redeploys so it doesn't start
+  over from zero each time. Without either, expect the tab to show very little right
+  after a deploy or wake-up — the panel note shows real collection status, and the
+  tab auto-refreshes every 30s so numbers visibly fill in as more accumulates.
 - **Requires `WARERA_API_KEY`** (see Configuration) — without it, the collector keeps
   failing quietly (with backoff, so it's not hammering logs) and the tab shows a clear
   message, while the rest of the dashboard keeps working normally.

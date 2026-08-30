@@ -431,7 +431,7 @@ async function fetchCraftHistory() {
   if (craftHistoryCache && now - craftHistoryCache.fetchedAt < 20_000) {
     return craftHistoryCache.transactions;
   }
-  const res = await fetch('/api/craft/history?hours=24');
+  const res = await fetch('/api/craft/history?hours=168'); // 7 days — the 1h-24h window buttons still control the "preferred/fresh" side; this widens how far the fallback can reach
   const body = await res.json();
   if (!res.ok || body.ok === false) throw new Error(body.error || 'Failed to load transaction history');
   console.log('craft history status:', { storeSize: body.storeSize, ingestActive: body.ingestActive, typeCounts: body.typeCounts });
@@ -463,7 +463,7 @@ function craftCostFor(rarity, prices) {
  * any combination, so a straight average of raw sales would be skewed by
  * however the mix happened to trade recently.
  *
- * Takes BOTH the recency-windowed sales and the full ~24h history: for
+ * Takes BOTH the recency-windowed sales and the full collected history (up to 7 days): for
  * each bucket, prefers the windowed price (freshest) but falls back to
  * the full-history price for that specific bucket if the window has zero
  * sales for it. Without this, a real but infrequently-traded combination
@@ -527,7 +527,7 @@ function getStatBuckets(windowedMatches, fullMatches) {
 function statsFor(windowedTx, fullTx, rarity, slot, craftTotal) {
   const windowedMatches = windowedTx.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
   const fullMatches = fullTx.filter((tx) => tx.rarity === rarity && (!slot || tx.slot === slot));
-  const count = fullMatches.length; // total sample backing this row (full ~24h), not just the recency window
+  const count = fullMatches.length; // total sample backing this row (full collected history), not just the recency window
   if (count === 0) return { count: 0, usedCount: 0, avgPrice: null, marginAbs: null, marginPct: null, pProfit: null };
 
   const withStat = fullMatches.filter((tx) => tx.statKey !== null);
@@ -625,7 +625,7 @@ function renderRarityGrid(windowedTx, fullTx, prices) {
             <span class="rarity-chip rarity-${r.rarity}">${r.rarity}</span>
             <span class="confidence-chip confidence-${conf.cls}">${conf.label}</span>
           </div>
-          <div class="rarity-card__sample">${r.count} sale${r.count === 1 ? '' : 's'} (24h) <span class="used-tag">· ${r.usedCount} used</span></div>
+          <div class="rarity-card__sample">${r.count} sale${r.count === 1 ? '' : 's'} (7d) <span class="used-tag">· ${r.usedCount} used</span></div>
           <div class="rarity-card__pct ${pctCls}">${pctText}</div>
           <div class="rarity-card__margin">${r.marginAbs !== null ? `${r.marginAbs >= 0 ? '+' : ''}${fmtNum(r.marginAbs)} per craft` : '—'}</div>
           <div class="rarity-card__foot">
@@ -668,7 +668,7 @@ function renderBreakdown(windowedTx, fullTx, prices) {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Slot</th><th>Odds</th><th>Avg Sale Price</th><th>Margin</th><th>P(profit)</th><th>Sales (24h / used)</th></tr>
+          <tr><th>Slot</th><th>Odds</th><th>Avg Sale Price</th><th>Margin</th><th>P(profit)</th><th>Sales (7d / used)</th></tr>
         </thead>
         <tbody>
           ${rows
@@ -744,7 +744,7 @@ function renderStatRollSection(windowedTx, fullTx, prices) {
     ? '<p class="breakdown-footnote">Weapon stat rolls combine two values (e.g. attack / crit chance) — each card is one full combination, not a single stat.</p>'
     : '';
   const staleNote = grid && grid.includes('statroll-card--stale')
-    ? '<p class="breakdown-footnote">Cards marked "older" had no sale in the selected time window — showing their most recent known price from the full ~24h history instead of hiding them.</p>'
+    ? '<p class="breakdown-footnote">Cards marked "older" had no sale in the selected time window — showing their most recent known price from the full collected history (up to 7 days) instead of hiding them.</p>'
     : '';
 
   el.innerHTML = grid
@@ -764,7 +764,7 @@ function renderStatRollSection(windowedTx, fullTx, prices) {
       </div>
       <p class="empty-state">
         No stat-roll value found in the transaction data for ${selectedRarity} ${selectedStatSlot}
-        in the full ~24h history (${fullMatches.length} sale${fullMatches.length === 1 ? '' : 's'} matched, but none carried a
+        in the full collected history (up to 7 days) (${fullMatches.length} sale${fullMatches.length === 1 ? '' : 's'} matched, but none carried a
         recognizable stat field). Check the console log for the raw transaction shape —
         the field name may need adjusting in <code>parseTransaction()</code>, or this
         combo just hasn't traded recently.

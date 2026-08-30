@@ -80,8 +80,15 @@ app.get('/api/market/transactions', (req, res) => {
 // request — if you want durable long-term coverage, that's the tradeoff
 // to solve for later (keep-alive pings, or a paid always-on tier).
 const txStore = new Map(); // _id -> transaction record
-const STORE_WINDOW_MS = 26 * 60 * 60 * 1000; // slightly over 24h; trimmed below
-const STORE_MAX_SIZE = 50_000;
+// A week plus a little buffer — extended from the original 26h so rare
+// combinations (e.g. a specific jet stat-roll that might only sell once
+// every several days) still have a real "most recent price" to fall back
+// on instead of showing nothing. Equipment-only filtering already cuts
+// stored volume by ~90% before it reaches this store, so a week's worth
+// stays well within both Upstash's free-tier storage cap (256MB — even
+// 100k+ records is only tens of MB as JSON) and Render's free-tier RAM.
+const STORE_WINDOW_MS = 7.25 * 24 * 60 * 60 * 1000;
+const STORE_MAX_SIZE = 150_000;
 // ---- Optional persistence (Upstash Redis) --------------------------------
 // Without these two env vars, everything below still works exactly as
 // before — the collected dataset just resets to zero on every restart or
@@ -226,7 +233,7 @@ startIngestion();
 // included so the frontend (or you, via console) can see real ingestion
 // health rather than just an empty-looking result.
 app.get('/api/craft/history', (req, res) => {
-  const hours = req.query.hours ? Number(req.query.hours) : 24;
+  const hours = req.query.hours ? Number(req.query.hours) : 168; // 7 days, matching STORE_WINDOW_MS
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
 
   const windowed = [...txStore.values()].filter((tx) => {
