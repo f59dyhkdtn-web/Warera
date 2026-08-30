@@ -292,6 +292,10 @@ let selectedStatSlot = 'Chest';
 // entered via the inputs in the Craft ROI panel.
 let scrapsPriceOverride = null;
 let steelPriceOverride = null;
+// 'ask' (default) = cheapest active sell order, what buying instantly
+// actually costs. 'bid' = highest active buy order, what patient buyers
+// are already offering. Only matters when there's no manual override.
+let priceSide = 'ask';
 
 async function getMaterialPrices() {
   const data = await api('/api/market/prices');
@@ -302,43 +306,46 @@ async function getMaterialPrices() {
   // itemTrading.getPrices (above) turned out to be some other reference
   // number, not the price you'd actually pay to buy right now — it was
   // off from the real order book by a meaningful amount. The true cost
-  // to instantly acquire a material is the cheapest active SELL order, so
-  // fetch the real order book for scraps/steel specifically and prefer
-  // that, falling back to the reference price only if the order book
-  // fetch fails or its shape doesn't parse as expected.
-  const [scrapsAsk, steelAsk] = await Promise.all([
-    getBestAskPrice('scraps', map.scraps),
-    getBestAskPrice('steel', map.steel),
+  // to instantly acquire a material is the cheapest active SELL order
+  // (ask), or, if you'd rather see what patient buyers are already
+  // offering instead of paying to buy instantly, the highest active BUY
+  // order (bid) — see priceSide. Falls back to the reference price only
+  // if the order book fetch fails or its shape doesn't parse as expected.
+  const [scrapsPrice, steelPrice] = await Promise.all([
+    getOrderBookPrice('scraps', map.scraps),
+    getOrderBookPrice('steel', map.steel),
   ]);
-  map.scraps = scrapsAsk;
-  map.steel = steelAsk;
+  map.scraps = scrapsPrice;
+  map.steel = steelPrice;
   return map;
 }
 
 /**
- * Cheapest active sell (ask) order for an item — what you'd actually pay
- * to buy it right now, as opposed to itemTrading.getPrices' reference
- * number. Confirmed live (via console): tradingOrder.getTopOrders returns
+ * Best active order for an item on the selected side — cheapest sell
+ * (ask, the default: what you'd pay to buy instantly) or highest buy
+ * (bid: what patient buyers are already offering). Confirmed live (via
+ * console): tradingOrder.getTopOrders returns
  * { buyOrders: [...], sellOrders: [...] }, each order having a numeric
  * `price` field — no side/type field needed, the two books are already
  * split out.
  */
-async function getBestAskPrice(itemCode, fallbackPrice) {
+async function getOrderBookPrice(itemCode, fallbackPrice) {
   try {
     const res = await fetch(`/api/market/orders?item=${itemCode}`);
     const body = await res.json();
     if (!res.ok || body.ok === false) throw new Error(body.error || 'orders fetch failed');
 
-    const sellOrders = Array.isArray(body.data?.sellOrders) ? body.data.sellOrders : [];
-    const prices = sellOrders.map((o) => Number(o.price)).filter(Number.isFinite);
+    const key = priceSide === 'bid' ? 'buyOrders' : 'sellOrders';
+    const orders = Array.isArray(body.data?.[key]) ? body.data[key] : [];
+    const prices = orders.map((o) => Number(o.price)).filter(Number.isFinite);
 
     if (prices.length === 0) {
-      console.warn(`no sell orders found for ${itemCode} — using reference price instead`);
+      console.warn(`no ${priceSide} orders found for ${itemCode} — using reference price instead`);
       return fallbackPrice;
     }
-    return Math.min(...prices);
+    return priceSide === 'bid' ? Math.max(...prices) : Math.min(...prices);
   } catch (err) {
-    console.warn(`best-ask fetch failed for ${itemCode}, falling back to reference price:`, err.message);
+    console.warn(`order-book fetch failed for ${itemCode}, falling back to reference price:`, err.message);
     return fallbackPrice;
   }
 }
@@ -799,8 +806,11 @@ async function renderCraftRoi() {
       if (Number.isFinite(scrapsPriceOverride)) overrideParts.push(`scraps @ ${fmtNum(scrapsPriceOverride)}`);
       if (Number.isFinite(steelPriceOverride)) overrideParts.push(`steel @ ${fmtNum(steelPriceOverride)}`);
       const overrideText = overrideParts.length ? ` Using manual price for ${overrideParts.join(' and ')} (not live).` : '';
+      const sideText = !overrideParts.length && priceSide === 'bid'
+        ? ' Using the current best BID (what buyers are offering), not the ask.'
+        : '';
       const coverage = craftIngestStatus.ingestActive
-        ? `Building up live — ${equipCount} equipment sales collected so far. ${modeText}${overrideText}`
+        ? `Building up live — ${equipCount} equipment sales collected so far. ${modeText}${overrideText}${sideText}`
         : `Data collection isn't running (check WARERA_API_KEY) — showing whatever was collected before it stopped.`;
       note.textContent = coverage;
     }
@@ -850,6 +860,14 @@ function init() {
     });
   });
 
+  $$('#priceSideFilter button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      priceSide = btn.dataset.side;
+      $$('#priceSideFilter button').forEach((b) => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      renderCraftRoi();
+    });
+  });
   $('#scrapsOverride').addEventListener('input', (e) => {
     const v = parseFloat(e.target.value);
     scrapsPriceOverride = Number.isFinite(v) ? v : null;

@@ -130,6 +130,10 @@
       <div class="recency-group">
         <span class="recency-label">Material prices (blank = live)</span>
         <div class="price-override-group">
+          <div class="time-filter" id="priceSideFilter">
+            <button data-side="ask" class="is-active">Ask</button>
+            <button data-side="bid">Bid</button>
+          </div>
           <label>Scraps <input type="number" id="scrapsOverride" step="0.001" placeholder="live" /></label>
           <label>Steel <input type="number" id="steelOverride" step="0.001" placeholder="live" /></label>
           <button id="clearOverrides" class="btn btn--sm">Reset to live</button>

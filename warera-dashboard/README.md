@@ -150,16 +150,20 @@ with one deliberate exception, see "Recency vs completeness" below.
 - **Material prices come from the real order book, not `itemTrading.getPrices`.**
   That endpoint turned out to return some other reference number — a live comparison
   against the actual in-game order book showed it meaningfully off from the price
-  you'd really pay. `getBestAskPrice()` in `app.js` fetches `tradingOrder.getTopOrders`
-  for scraps/steel specifically and uses the cheapest active sell order (what buying
-  right now actually costs). Confirmed live via console: the response is
+  you'd really pay. `getOrderBookPrice()` in `app.js` fetches `tradingOrder.getTopOrders`
+  for scraps/steel specifically. Confirmed live via console: the response is
   `{ buyOrders: [...], sellOrders: [...] }`, each order with a plain numeric `price`
-  field — falls back to the reference price only if that fetch fails or returns no
-  sell orders.
+  field — falls back to the reference price only if that fetch fails or the selected
+  side has no active orders.
+- **Ask vs Bid toggle**: defaults to **Ask** (cheapest active sell order — what buying
+  instantly actually costs). Switching to **Bid** uses the highest active buy order
+  instead (what patient buyers are already offering, if you'd rather place your own
+  order and wait than pay to buy instantly).
 - **Scraps/steel prices can be manually overridden** via the two inputs next to the
   recency controls — useful for checking a specific price point rather than
-  whatever's live. Blank means "use live price"; "Reset to live" clears both at once.
-  An active override is called out in the panel note.
+  whatever's live (and takes priority over the Ask/Bid toggle when set). Blank means
+  "use live price"; "Reset to live" clears both at once. An active override is
+  called out in the panel note.
 - **Sale data comes from a continuously-running background collector, not a
   per-request fetch.** This API has no working server-side filter — `transactionType`
   and `limit` are both silently ignored (confirmed via `/api/craft/debug`), returning
